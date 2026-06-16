@@ -29,6 +29,8 @@ import { TerminalOutput, TerminalOutputListener } from '../lib/git'
 import type { IBYOKModel, IBYOKProvider } from '../lib/copilot/byok'
 import { WorktreeEntry } from './worktree'
 
+export type CommitMessageGenerator = 'copilot' | 'codex'
+
 export enum PopupType {
   RenameBranch = 'RenameBranch',
   DeleteBranch = 'DeleteBranch',
@@ -486,6 +488,7 @@ export type PopupDetail =
       type: PopupType.GenerateCommitMessageOverrideWarning
       repository: Repository
       filesSelected: ReadonlyArray<WorkingDirectoryFileChange>
+      generator: CommitMessageGenerator
     }
   | {
       type: PopupType.GenerateCommitMessageDisclaimer

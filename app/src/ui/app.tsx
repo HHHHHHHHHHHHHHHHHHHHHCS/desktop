@@ -57,6 +57,7 @@ import {
   WorktreeDropdown,
   RevertProgress,
 } from './toolbar'
+import { getSyncForkState } from './toolbar/sync-fork-state'
 import { iconForRepository, OcticonSymbol } from './octicons'
 import * as octicons from './octicons/octicons.generated'
 import {
@@ -157,7 +158,10 @@ import { MultiCommitOperation } from './multi-commit-operation/multi-commit-oper
 import { WarnLocalChangesBeforeUndo } from './undo/warn-local-changes-before-undo'
 import { WarningBeforeReset } from './reset/warning-before-reset'
 import { InvalidatedToken } from './invalidated-token/invalidated-token'
-import { MultiCommitOperationKind } from '../models/multi-commit-operation'
+import {
+  MultiCommitOperationKind,
+  MultiCommitOperationStepKind,
+} from '../models/multi-commit-operation'
 import { AddSSHHost } from './ssh/add-ssh-host'
 import { SSHKeyPassphrase } from './ssh/ssh-key-passphrase'
 import { getMultiCommitOperationChooseBranchStep } from '../lib/multi-commit-operation'
@@ -366,6 +370,7 @@ export class App extends React.Component<IAppProps, IAppState> {
 
   public componentWillUnmount() {
     window.clearInterval(this.updateIntervalHandle)
+    void this.props.dispatcher.cleanupExternalDiffTempDirectories()
 
     if (__DARWIN__) {
       window.removeEventListener('keydown', this.onMacOSWindowKeyDown)
@@ -658,7 +663,7 @@ export class App extends React.Component<IAppProps, IAppState> {
     updateStore.checkForUpdates(inBackground, skipGuidCheck)
   }
 
-  private updateBranchWithContributionTargetBranch() {
+  private async updateBranchWithContributionTargetBranch() {
     const { selectedState } = this.state
     if (
       selectedState == null ||
@@ -668,6 +673,13 @@ export class App extends React.Component<IAppProps, IAppState> {
     }
 
     const { state, repository } = selectedState
+    const rebaseOperationInProgress =
+      state.multiCommitOperationState?.operationDetail.kind ===
+      MultiCommitOperationKind.Rebase
+
+    if (state.isPushPullFetchInProgress || rebaseOperationInProgress) {
+      return
+    }
 
     const contributionTargetDefaultBranch = findContributionTargetDefaultBranch(
       repository,
@@ -677,18 +689,33 @@ export class App extends React.Component<IAppProps, IAppState> {
       return
     }
 
-    this.props.dispatcher.initializeMergeOperation(
+    const tip = state.branchesState.tip
+    if (tip.kind !== TipState.Valid) {
+      return
+    }
+
+    this.props.dispatcher.initializeMultiCommitOperation(
       repository,
-      false,
-      contributionTargetDefaultBranch
+      {
+        kind: MultiCommitOperationKind.Rebase,
+        sourceBranch: contributionTargetDefaultBranch,
+        commits: [],
+        currentTip: contributionTargetDefaultBranch.tip.sha,
+      },
+      tip.branch,
+      [],
+      tip.branch.tip.sha
     )
 
-    const { mergeStatus } = state.compareState
-    this.props.dispatcher.mergeBranch(
+    await this.props.dispatcher.rebase(
       repository,
       contributionTargetDefaultBranch,
-      mergeStatus
+      tip.branch
     )
+  }
+
+  private syncFork = () => {
+    void this.updateBranchWithContributionTargetBranch()
   }
 
   private mergeBranch(isSquash: boolean = false) {
@@ -1689,6 +1716,8 @@ export class App extends React.Component<IAppProps, IAppState> {
             customEditor={this.state.customEditor}
             useCustomShell={this.state.useCustomShell}
             customShell={this.state.customShell}
+            useCustomExternalDiff={this.state.useCustomExternalDiff}
+            customExternalDiff={this.state.customExternalDiff}
             repositoryIndicatorsEnabled={this.state.repositoryIndicatorsEnabled}
             onEditGlobalGitConfig={this.editGlobalGitConfig}
             underlineLinks={this.state.underlineLinks}
@@ -1699,6 +1728,12 @@ export class App extends React.Component<IAppProps, IAppState> {
             alwaysUseCopilotForConflictResolution={
               this.state.alwaysUseCopilotForConflictResolution
             }
+            codexCliCommand={this.state.codexCliCommand}
+            codexCliModel={this.state.codexCliModel}
+            codexCliStatus={this.state.codexCliStatus}
+            codexCliVersion={this.state.codexCliVersion}
+            codexCliCheckedAt={this.state.codexCliCheckedAt}
+            codexCliLastError={this.state.codexCliLastError}
           />
         )
       case PopupType.RepositorySettings: {
@@ -2711,7 +2746,9 @@ export class App extends React.Component<IAppProps, IAppState> {
             dispatcher={this.props.dispatcher}
             repository={popup.repository}
             filesSelected={popup.filesSelected}
+            generator={popup.generator}
             showCopilotInstructionsTip={
+              popup.generator === 'copilot' &&
               account !== undefined &&
               enableCopilotSdkCommitMessageGeneration(account)
             }
@@ -3478,6 +3515,27 @@ export class App extends React.Component<IAppProps, IAppState> {
       aheadBehind
     )
 
+    const contributionTargetDefaultBranch = findContributionTargetDefaultBranch(
+      selection.repository,
+      branchesState
+    )
+    const rebaseOperationInProgress =
+      state.multiCommitOperationState?.operationDetail.kind ===
+      MultiCommitOperationKind.Rebase
+    const syncForkInProgress =
+      rebaseOperationInProgress &&
+      state.multiCommitOperationState?.step.kind ===
+        MultiCommitOperationStepKind.ShowProgress
+    const syncForkState = getSyncForkState({
+      isForkRepository: selection.repository.gitHubRepository?.parent !== null,
+      contributionTargetBranchName:
+        contributionTargetDefaultBranch?.name ?? null,
+      tipState: tip.kind,
+      networkActionInProgress: state.isPushPullFetchInProgress,
+      rebaseOperationInProgress,
+      syncForkInProgress,
+    })
+
     /** The dropdown focus trap will stop focus event propagation we made need
      * in some of our dialogs (noticed with Lists). Disabled this when dialogs
      * are open */
@@ -3492,11 +3550,17 @@ export class App extends React.Component<IAppProps, IAppState> {
         remoteName={remoteName}
         lastFetched={state.lastFetched}
         networkActionInProgress={state.isPushPullFetchInProgress}
+        showSyncFork={syncForkState.showSyncFork}
+        canSyncFork={syncForkState.canSyncFork}
+        syncForkInProgress={syncForkState.syncForkInProgress}
+        syncForkDisabledReason={syncForkState.syncForkDisabledReason}
+        syncForkTargetBranchName={syncForkState.syncForkTargetBranchName}
         progress={progress}
         tipState={tip.kind}
         pullWithRebase={pullWithRebase}
         rebaseInProgress={rebaseInProgress}
         forcePushBranchState={forcePushBranchState}
+        syncFork={this.syncFork}
         shouldNudge={
           this.state.currentOnboardingTutorialStep === TutorialStep.PushBranch
         }
@@ -3843,6 +3907,10 @@ export class App extends React.Component<IAppProps, IAppState> {
           shouldShowGenerateCommitMessageCallOut={
             !this.state.commitMessageGenerationButtonClicked
           }
+          codexCliStatus={state.codexCliStatus}
+          codexCliLastError={state.codexCliLastError}
+          useCustomExternalDiff={state.useCustomExternalDiff}
+          customExternalDiff={state.customExternalDiff}
           skipCommitHooks={selectedState.state.skipCommitHooks}
           signOffCommits={selectedState.state.signOffCommits}
           allowEmptyCommit={selectedState.state.allowEmptyCommit}

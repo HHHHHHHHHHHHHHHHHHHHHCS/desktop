@@ -1,11 +1,13 @@
 import * as Path from 'path'
-import { writeFile } from 'fs/promises'
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'fs/promises'
+import { tmpdir } from 'os'
 import {
   AccountsStore,
   CloningRepositoriesStore,
   CopilotStore,
   GitHubUserStore,
   GitStore,
+  ICompareCommitSearchBatch,
   IssuesStore,
   PullRequestCoordinator,
   RepositoriesStore,
@@ -75,6 +77,7 @@ import {
   RepositoryWithGitHubRepository,
   getNonForkGitHubRepository,
   isForkedRepositoryContributingToParent,
+  isRepositoryAutoUpdateEnabled,
 } from '../../models/repository'
 import {
   CommittedFileChange,
@@ -95,6 +98,7 @@ import {
   IMultiCommitOperationProgress,
 } from '../../models/progress'
 import { Popup, PopupType } from '../../models/popup'
+import { CommitMessageGenerator } from '../../models/popup'
 import { themeChangeMonitor } from '../../ui/lib/theme-change-monitor'
 import { getAppPath } from '../../ui/lib/app-proxy'
 import {
@@ -131,6 +135,7 @@ import {
 import { shell } from '../app-shell'
 import {
   CompareAction,
+  defaultCompareCommitSearchType,
   HistoryTabMode,
   Foldout,
   FoldoutType,
@@ -139,6 +144,7 @@ import {
   ICompareFormUpdate,
   ICompareToBranch,
   IDisplayHistory,
+  CodexCliStatus,
   PossibleSelections,
   RepositorySectionTab,
   SelectionType,
@@ -253,7 +259,7 @@ import { hasShownWelcomeFlow, markWelcomeFlowComplete } from '../welcome'
 import { WindowState } from '../window-state'
 import { TypedBaseStore } from './base-store'
 import { MergeTreeResult } from '../../models/merge'
-import { promiseWithMinimumTimeout } from '../promise'
+import { promiseWithMinimumTimeout, timeout } from '../promise'
 import { BackgroundFetcher } from './helpers/background-fetcher'
 import { RepositoryStateCache } from './repository-state-cache'
 import { readEmoji } from '../read-emoji'
@@ -384,7 +390,13 @@ import { IOAuthAction } from '../parse-app-url'
 import {
   ICustomIntegration,
   migratedCustomIntegration,
+  spawnCustomIntegration,
 } from '../custom-integration'
+import { launchCustomExternalDiff } from '../external-diff'
+import {
+  checkCodexCliAvailability,
+  buildCodexCliCommitInTerminalInvocation,
+} from '../codex-cli'
 import { updateStore } from '../../ui/lib/update-store'
 import { startTimer } from '../../ui/lib/timing'
 import { BypassReasonType } from '../../ui/secret-scanning/bypass-push-protection-dialog'
@@ -409,6 +421,7 @@ import {
 import { resolveWithin } from '../path'
 import { WorktreeEntry } from '../../models/worktree'
 import type { Model } from '@github/copilot-sdk/dist/generated/rpc'
+import { getBlobContents } from '../git/show'
 
 const LastSelectedRepositoryIDKey = 'last-selected-repository-id'
 
@@ -520,6 +533,8 @@ const customEditorKey = 'custom-editor'
 
 export const useCustomShellKey = 'use-custom-shell'
 const customShellKey = 'custom-shell'
+const useCustomExternalDiffKey = 'use-custom-external-diff'
+const customExternalDiffKey = 'custom-external-diff'
 
 export const underlineLinksKey = 'underline-links'
 export const underlineLinksDefault = true
@@ -546,6 +561,22 @@ export const showChangesFilterKey = 'show-changes-filter'
 
 const selectedCopilotModelsKey = 'selected-copilot-models'
 export const showChangesFilterDefault = true
+
+const codexCliCommandKey = 'codex-cli-command'
+const codexCliModelKey = 'codex-cli-model'
+const codexCliVersionKey = 'codex-cli-version'
+const codexCliCheckedAtKey = 'codex-cli-checked-at'
+const codexCliStatusKey = 'codex-cli-status'
+const codexCliLastErrorKey = 'codex-cli-last-error'
+const defaultCodexCliCommand =
+  'codex --dangerously-bypass-approvals-and-sandbox'
+const defaultCodexCliModel = ''
+const defaultCodexInstallCommand = 'npm install -g @openai/codex'
+
+const CompareSearchBatchTimeoutMs = 8_000
+const CompareSearchBatchTimeout = Symbol('compare-search-batch-timeout')
+const ExternalDiffTempFileCleanupTimeoutMs = 10 * 60 * 1000
+const ExternalDiffTempDirectoryPrefix = 'desktop-history-diff-'
 
 export class AppStore extends TypedBaseStore<IAppState> {
   private readonly gitStoreCache: GitStoreCache
@@ -652,6 +683,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
   private repositoryFilterText: string = ''
 
   private currentMergeTreePromise: Promise<void> | null = null
+  private readonly compareSearchGeneration = new Map<number, number>()
 
   /** The function to resolve the current Open in Desktop flow. */
   private resolveOpenInDesktop:
@@ -685,6 +717,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
   private useCustomShell: boolean = false
   private customShell: ICustomIntegration | null = null
+  private useCustomExternalDiff: boolean = false
+  private customExternalDiff: ICustomIntegration | null = null
 
   private showCIStatusPopover: boolean = false
 
@@ -705,6 +739,12 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
   private commitMessageGenerationDisclaimerLastSeen: number | null = null
   private commitMessageGenerationButtonClicked: boolean = false
+  private codexCliCommand: string = defaultCodexCliCommand
+  private codexCliModel: string = defaultCodexCliModel
+  private codexCliVersion: string | null = null
+  private codexCliCheckedAt: number | null = null
+  private codexCliStatus: CodexCliStatus = 'missing'
+  private codexCliLastError: string | null = null
 
   private copilotConflictResolutionDisclaimerLastSeen: number | null = null
   private copilotConflictResolutionClickCount: number = 0
@@ -1253,6 +1293,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
       customEditor: this.customEditor,
       useCustomShell: this.useCustomShell,
       customShell: this.customShell,
+      useCustomExternalDiff: this.useCustomExternalDiff,
+      customExternalDiff: this.customExternalDiff,
       showCIStatusPopover: this.showCIStatusPopover,
       notificationsEnabled: getNotificationsEnabled(),
       pullRequestSuggestedNextAction: this.pullRequestSuggestedNextAction,
@@ -1272,6 +1314,12 @@ export class AppStore extends TypedBaseStore<IAppState> {
         this.copilotConflictResolutionClickCount,
       alwaysUseCopilotForConflictResolution:
         this.alwaysUseCopilotForConflictResolution,
+      codexCliCommand: this.codexCliCommand,
+      codexCliModel: this.codexCliModel,
+      codexCliVersion: this.codexCliVersion,
+      codexCliCheckedAt: this.codexCliCheckedAt,
+      codexCliStatus: this.codexCliStatus,
+      codexCliLastError: this.codexCliLastError,
       showChangesFilter: this.showChangesFilter,
       selectedCopilotModels: this.selectedCopilotModels,
       copilotModels: this.copilotModels,
@@ -1693,6 +1741,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
     const kind = action.kind
 
     if (action.kind === HistoryTabMode.History) {
+      this.invalidateCompareSearch(repository)
+
       const { tip } = gitStore
 
       let currentSha: string | null = null
@@ -1739,6 +1789,12 @@ export class AppStore extends TypedBaseStore<IAppState> {
         commitSHAs: commits,
         filterText: '',
         showBranchList: false,
+        searchText: '',
+        isSearchLoading: false,
+        isSearchResultsEmpty: false,
+        hasMoreSearchResults: false,
+        searchCursor: 0,
+        didSearchTimeout: false,
       }))
       this.updateOrSelectFirstCommit(repository, commits)
 
@@ -1754,8 +1810,11 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
   private async updateCompareToBranch(
     repository: Repository,
-    action: ICompareToBranch
+    action: ICompareToBranch,
+    recordStats: boolean = true
   ) {
+    this.invalidateCompareSearch(repository)
+
     const gitStore = this.gitStoreCache.get(repository)
 
     const comparisonBranch = action.branch
@@ -1764,14 +1823,16 @@ export class AppStore extends TypedBaseStore<IAppState> {
       action.comparisonMode
     )
 
-    this.statsStore.increment('branchComparisons')
-    const { branchesState } = this.repositoryStateCache.get(repository)
+    if (recordStats) {
+      this.statsStore.increment('branchComparisons')
+      const { branchesState } = this.repositoryStateCache.get(repository)
 
-    if (
-      branchesState.defaultBranch !== null &&
-      comparisonBranch.name === branchesState.defaultBranch.name
-    ) {
-      this.statsStore.increment('defaultBranchComparisons')
+      if (
+        branchesState.defaultBranch !== null &&
+        comparisonBranch.name === branchesState.defaultBranch.name
+      ) {
+        this.statsStore.increment('defaultBranchComparisons')
+      }
     }
 
     if (compare == null) {
@@ -1794,6 +1855,12 @@ export class AppStore extends TypedBaseStore<IAppState> {
       formState: newState,
       filterText: comparisonBranch.name,
       commitSHAs,
+      searchText: '',
+      isSearchLoading: false,
+      isSearchResultsEmpty: false,
+      hasMoreSearchResults: false,
+      searchCursor: 0,
+      didSearchTimeout: false,
     }))
 
     const tip = gitStore.tip
@@ -1863,11 +1930,232 @@ export class AppStore extends TypedBaseStore<IAppState> {
     repository: Repository,
     newState: Pick<ICompareFormUpdate, K>
   ) {
+    if ('searchType' in newState) {
+      const currentSearchType =
+        this.repositoryStateCache.get(repository).compareState.searchType
+      if (newState.searchType !== currentSearchType) {
+        this.invalidateCompareSearch(repository)
+      }
+    }
+
     this.repositoryStateCache.updateCompareState(repository, state => {
       return merge(state, newState)
     })
 
     this.emitUpdate()
+  }
+
+  /** This shouldn't be called directly. See `Dispatcher`. */
+  public async _submitCompareCommitSearch(
+    repository: Repository,
+    searchText: string
+  ) {
+    const trimmedSearchText = searchText.trim()
+    const { compareState } = this.repositoryStateCache.get(repository)
+    const { formState } = compareState
+
+    if (
+      formState.kind !== HistoryTabMode.Compare &&
+      formState.kind !== HistoryTabMode.History
+    ) {
+      return
+    }
+
+    if (
+      trimmedSearchText === compareState.searchText &&
+      compareState.didSearchTimeout
+    ) {
+      return this._loadNextCompareCommitSearchBatch(repository)
+    }
+
+    this.invalidateCompareSearch(repository)
+
+    if (trimmedSearchText.length === 0) {
+      const resetSearchState = {
+        searchText: '',
+        isSearchLoading: false,
+        isSearchResultsEmpty: false,
+        hasMoreSearchResults: false,
+        searchCursor: 0,
+        didSearchTimeout: false,
+      }
+
+      if (formState.kind === HistoryTabMode.History) {
+        this.repositoryStateCache.updateCompareState(repository, () => ({
+          ...resetSearchState,
+          commitSHAs: [],
+        }))
+      } else {
+        this.repositoryStateCache.updateCompareState(repository, () => ({
+          ...resetSearchState,
+        }))
+      }
+
+      this.emitUpdate()
+
+      if (formState.kind === HistoryTabMode.History) {
+        return this._executeCompare(repository, {
+          kind: HistoryTabMode.History,
+        })
+      }
+
+      return this.updateCompareToBranch(
+        repository,
+        {
+          kind: HistoryTabMode.Compare,
+          branch: formState.comparisonBranch,
+          comparisonMode: formState.comparisonMode,
+        },
+        false
+      )
+    }
+
+    this.repositoryStateCache.updateCompareState(repository, () => ({
+      searchText: trimmedSearchText,
+      isSearchLoading: true,
+      isSearchResultsEmpty: false,
+      hasMoreSearchResults: true,
+      searchCursor: 0,
+      didSearchTimeout: false,
+      commitSHAs: [],
+    }))
+
+    this.updateOrSelectFirstCommit(repository, [])
+    this.emitUpdate()
+
+    return this._loadNextCompareCommitSearchBatch(repository, true)
+  }
+
+  /** This shouldn't be called directly. See `Dispatcher`. */
+  public async _loadNextCompareCommitSearchBatch(
+    repository: Repository,
+    forceReload: boolean = false
+  ) {
+    const state = this.repositoryStateCache.get(repository)
+    const { compareState } = state
+    const { formState } = compareState
+
+    if (
+      formState.kind !== HistoryTabMode.Compare &&
+      formState.kind !== HistoryTabMode.History
+    ) {
+      return
+    }
+
+    const searchText = compareState.searchText.trim()
+    if (searchText.length === 0) {
+      return
+    }
+
+    if (
+      forceReload === false &&
+      (compareState.isSearchLoading || !compareState.hasMoreSearchResults)
+    ) {
+      return
+    }
+
+    const searchType = compareState.searchType ?? defaultCompareCommitSearchType
+    const cursor = forceReload ? 0 : compareState.searchCursor
+    const generation = this.nextCompareSearchGeneration(repository)
+    const gitStore = this.gitStoreCache.get(repository)
+
+    if (!compareState.isSearchLoading) {
+      this.repositoryStateCache.updateCompareState(repository, () => ({
+        isSearchLoading: true,
+        didSearchTimeout: false,
+      }))
+      this.emitUpdate()
+    }
+
+    let searchPromise: Promise<ICompareCommitSearchBatch | null>
+    if (formState.kind === HistoryTabMode.Compare) {
+      searchPromise = gitStore.searchCompareCommits(
+        formState.comparisonBranch,
+        formState.comparisonMode,
+        searchType,
+        searchText,
+        cursor
+      )
+    } else if (formState.kind === HistoryTabMode.History) {
+      searchPromise = gitStore.searchCurrentBranchCommits(
+        searchType,
+        searchText,
+        cursor
+      )
+    } else {
+      return
+    }
+
+    const searchResult = await timeout<
+      ICompareCommitSearchBatch | null | typeof CompareSearchBatchTimeout
+    >(searchPromise, CompareSearchBatchTimeoutMs, CompareSearchBatchTimeout)
+
+    if (this.compareSearchGeneration.get(repository.id) !== generation) {
+      return
+    }
+
+    if (searchResult === CompareSearchBatchTimeout) {
+      gitStore.cancelCompareCommitSearch()
+      this.repositoryStateCache.updateCompareState(repository, () => ({
+        isSearchLoading: false,
+        didSearchTimeout: true,
+      }))
+      this.emitUpdate()
+      return
+    }
+
+    if (searchResult === null) {
+      this.repositoryStateCache.updateCompareState(repository, () => ({
+        isSearchLoading: false,
+      }))
+      this.emitUpdate()
+      return
+    }
+
+    const latestState = this.repositoryStateCache.get(repository)
+    const latestCompareState = latestState.compareState
+
+    const previousCommitSHAs = forceReload ? [] : latestCompareState.commitSHAs
+    const uniqueSHAs = new Set(previousCommitSHAs)
+    const newSHAs = searchResult.shas.filter(sha => !uniqueSHAs.has(sha))
+    const commitSHAs = [...previousCommitSHAs, ...newSHAs]
+
+    this.repositoryStateCache.updateCompareState(repository, () => ({
+      commitSHAs,
+      searchCursor: searchResult.nextCursor,
+      hasMoreSearchResults: searchResult.hasMoreResults,
+      isSearchLoading: false,
+      didSearchTimeout: false,
+      isSearchResultsEmpty:
+        commitSHAs.length === 0 && !searchResult.hasMoreResults,
+    }))
+
+    this.updateOrSelectFirstCommit(repository, commitSHAs)
+    this.emitUpdate()
+  }
+
+  /** This shouldn't be called directly. See `Dispatcher`. */
+  public _cancelCompareCommitSearch(repository: Repository) {
+    this.invalidateCompareSearch(repository)
+
+    this.repositoryStateCache.updateCompareState(repository, () => ({
+      isSearchLoading: false,
+      didSearchTimeout: false,
+    }))
+
+    this.emitUpdate()
+  }
+
+  private nextCompareSearchGeneration(repository: Repository): number {
+    const repositoryId = repository.id
+    const generation = (this.compareSearchGeneration.get(repositoryId) ?? 0) + 1
+    this.compareSearchGeneration.set(repositoryId, generation)
+    return generation
+  }
+
+  private invalidateCompareSearch(repository: Repository) {
+    this.nextCompareSearchGeneration(repository)
+    this.gitStoreCache.get(repository).cancelCompareCommitSearch()
   }
 
   /** This shouldn't be called directly. See `Dispatcher`. */
@@ -2035,6 +2323,364 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }))
 
     this.emitUpdate()
+  }
+
+  /**
+   * Open a committed file diff using the configured external diff tool when
+   * available, otherwise fallback to the built-in history diff viewer.
+   */
+  public async _diffFileInHistory(
+    repository: Repository,
+    file: CommittedFileChange
+  ): Promise<void> {
+    const launchedExternalDiff =
+      await this.tryOpenInExternalDiffForCommittedFile(repository, file)
+
+    if (launchedExternalDiff) {
+      return
+    }
+
+    await this._changeFileSelection(repository, file)
+  }
+
+  /**
+   * Open a working directory file diff using the configured external diff tool
+   * when available, otherwise fallback to the built-in changes diff viewer.
+   */
+  public async _diffFileInChanges(
+    repository: Repository,
+    file: WorkingDirectoryFileChange
+  ): Promise<void> {
+    const launchedExternalDiff =
+      await this.tryOpenInExternalDiffForWorkingDirectoryFile(repository, file)
+
+    if (launchedExternalDiff) {
+      return
+    }
+
+    await this._selectWorkingDirectoryFiles(repository, [file])
+  }
+
+  /**
+   * Open diffs for multiple working directory files using the configured
+   * external diff tool when available, otherwise preserve the multi-file
+   * selection in the changes view.
+   */
+  public async _diffFilesInChanges(
+    repository: Repository,
+    files: ReadonlyArray<WorkingDirectoryFileChange>
+  ): Promise<void> {
+    if (files.length === 0) {
+      return
+    }
+
+    if (files.length === 1) {
+      return this._diffFileInChanges(repository, files[0])
+    }
+
+    const launchedExternalDiff =
+      await this.tryOpenInExternalDiffForWorkingDirectoryFiles(
+        repository,
+        files
+      )
+
+    if (launchedExternalDiff) {
+      return
+    }
+
+    await this._selectWorkingDirectoryFiles(repository, [...files])
+  }
+
+  private async tryOpenInExternalDiffForCommittedFile(
+    repository: Repository,
+    file: CommittedFileChange
+  ): Promise<boolean> {
+    if (!this.useCustomExternalDiff || this.customExternalDiff === null) {
+      return false
+    }
+
+    let tempDirectory: string | null = null
+
+    try {
+      const {
+        tempDirectory: createdTempDirectory,
+        leftPath,
+        rightPath,
+      } = await this.createCommittedFileExternalDiffTempFiles(repository, file)
+      tempDirectory = createdTempDirectory
+
+      await launchCustomExternalDiff(
+        leftPath,
+        rightPath,
+        this.customExternalDiff
+      )
+
+      this.scheduleExternalDiffTempDirectoryCleanup(tempDirectory)
+      return true
+    } catch (error) {
+      if (tempDirectory !== null) {
+        await this.removeExternalDiffTempDirectory(tempDirectory)
+      }
+      this.emitError(error)
+      return false
+    }
+  }
+
+  private async tryOpenInExternalDiffForWorkingDirectoryFile(
+    repository: Repository,
+    file: WorkingDirectoryFileChange
+  ): Promise<boolean> {
+    if (!this.useCustomExternalDiff || this.customExternalDiff === null) {
+      return false
+    }
+
+    let tempDirectory: string | null = null
+
+    try {
+      const {
+        tempDirectory: createdTempDirectory,
+        leftPath,
+        rightPath,
+      } = await this.createWorkingDirectoryFileExternalDiffTempFiles(
+        repository,
+        file
+      )
+      tempDirectory = createdTempDirectory
+
+      await launchCustomExternalDiff(
+        leftPath,
+        rightPath,
+        this.customExternalDiff
+      )
+
+      this.scheduleExternalDiffTempDirectoryCleanup(tempDirectory)
+      return true
+    } catch (error) {
+      if (tempDirectory !== null) {
+        await this.removeExternalDiffTempDirectory(tempDirectory)
+      }
+      this.emitError(error)
+      return false
+    }
+  }
+
+  private async tryOpenInExternalDiffForWorkingDirectoryFiles(
+    repository: Repository,
+    files: ReadonlyArray<WorkingDirectoryFileChange>
+  ): Promise<boolean> {
+    if (!this.useCustomExternalDiff || this.customExternalDiff === null) {
+      return false
+    }
+
+    let launchedAnyExternalDiff = false
+
+    for (const file of files) {
+      let tempDirectory: string | null = null
+
+      try {
+        const {
+          tempDirectory: createdTempDirectory,
+          leftPath,
+          rightPath,
+        } = await this.createWorkingDirectoryFileExternalDiffTempFiles(
+          repository,
+          file
+        )
+        tempDirectory = createdTempDirectory
+
+        await launchCustomExternalDiff(
+          leftPath,
+          rightPath,
+          this.customExternalDiff
+        )
+
+        launchedAnyExternalDiff = true
+        this.scheduleExternalDiffTempDirectoryCleanup(tempDirectory)
+      } catch (error) {
+        if (tempDirectory !== null) {
+          await this.removeExternalDiffTempDirectory(tempDirectory)
+        }
+
+        this.emitError(error)
+        return launchedAnyExternalDiff
+      }
+    }
+
+    return launchedAnyExternalDiff
+  }
+
+  private async createCommittedFileExternalDiffTempFiles(
+    repository: Repository,
+    file: CommittedFileChange
+  ): Promise<{
+    readonly tempDirectory: string
+    readonly leftPath: string
+    readonly rightPath: string
+  }> {
+    const { leftContents, rightContents } =
+      await this.getCommittedFileExternalDiffContents(repository, file)
+    const extension = Path.extname(file.path)
+    const baseName = Path.basename(file.path, extension) || 'file'
+    const tempDirectory = await mkdtemp(
+      Path.join(tmpdir(), ExternalDiffTempDirectoryPrefix)
+    )
+    const leftPath = Path.join(tempDirectory, `${baseName}.left${extension}`)
+    const rightPath = Path.join(tempDirectory, `${baseName}.right${extension}`)
+
+    await Promise.all([
+      writeFile(leftPath, leftContents),
+      writeFile(rightPath, rightContents),
+    ])
+
+    return { tempDirectory, leftPath, rightPath }
+  }
+
+  private async createWorkingDirectoryFileExternalDiffTempFiles(
+    repository: Repository,
+    file: WorkingDirectoryFileChange
+  ): Promise<{
+    readonly tempDirectory: string
+    readonly leftPath: string
+    readonly rightPath: string
+  }> {
+    const { leftContents, rightContents } =
+      await this.getWorkingDirectoryFileExternalDiffContents(repository, file)
+    const extension = Path.extname(file.path)
+    const baseName = Path.basename(file.path, extension) || 'file'
+    const tempDirectory = await mkdtemp(
+      Path.join(tmpdir(), ExternalDiffTempDirectoryPrefix)
+    )
+    const leftPath = Path.join(tempDirectory, `${baseName}.left${extension}`)
+    const rightPath = Path.join(tempDirectory, `${baseName}.right${extension}`)
+
+    await Promise.all([
+      writeFile(leftPath, leftContents),
+      writeFile(rightPath, rightContents),
+    ])
+
+    return { tempDirectory, leftPath, rightPath }
+  }
+
+  private async getCommittedFileExternalDiffContents(
+    repository: Repository,
+    file: CommittedFileChange
+  ): Promise<{
+    readonly leftContents: Buffer
+    readonly rightContents: Buffer
+  }> {
+    const oldPath =
+      file.status.kind === AppFileStatusKind.Renamed ||
+      file.status.kind === AppFileStatusKind.Copied
+        ? file.status.oldPath
+        : file.path
+
+    const leftContents =
+      file.status.kind === AppFileStatusKind.New
+        ? Buffer.alloc(0)
+        : await this.getBlobContentsOrEmpty(
+            repository,
+            file.parentCommitish,
+            oldPath
+          )
+
+    const rightContents =
+      file.status.kind === AppFileStatusKind.Deleted
+        ? Buffer.alloc(0)
+        : await this.getBlobContentsOrEmpty(
+            repository,
+            file.commitish,
+            file.path
+          )
+
+    return { leftContents, rightContents }
+  }
+
+  private async getWorkingDirectoryFileExternalDiffContents(
+    repository: Repository,
+    file: WorkingDirectoryFileChange
+  ): Promise<{
+    readonly leftContents: Buffer
+    readonly rightContents: Buffer
+  }> {
+    const oldPath =
+      file.status.kind === AppFileStatusKind.Renamed ||
+      file.status.kind === AppFileStatusKind.Copied
+        ? file.status.oldPath
+        : file.path
+
+    const leftContents =
+      file.status.kind === AppFileStatusKind.New ||
+      file.status.kind === AppFileStatusKind.Untracked
+        ? Buffer.alloc(0)
+        : await this.getBlobContentsOrEmpty(repository, 'HEAD', oldPath)
+
+    const rightContents =
+      file.status.kind === AppFileStatusKind.Deleted
+        ? Buffer.alloc(0)
+        : await this.getWorkingDirectoryFileContentsOrEmpty(repository, file)
+
+    return { leftContents, rightContents }
+  }
+
+  private async getBlobContentsOrEmpty(
+    repository: Repository,
+    commitish: string,
+    path: string
+  ): Promise<Buffer> {
+    try {
+      return await getBlobContents(repository, commitish, path)
+    } catch {
+      return Buffer.alloc(0)
+    }
+  }
+
+  private async getWorkingDirectoryFileContentsOrEmpty(
+    repository: Repository,
+    file: WorkingDirectoryFileChange
+  ): Promise<Buffer> {
+    try {
+      return await readFile(Path.join(repository.path, file.path))
+    } catch {
+      return Buffer.alloc(0)
+    }
+  }
+
+  private scheduleExternalDiffTempDirectoryCleanup(tempDirectory: string) {
+    window.setTimeout(() => {
+      void this.removeExternalDiffTempDirectory(tempDirectory)
+    }, ExternalDiffTempFileCleanupTimeoutMs)
+  }
+
+  private async removeExternalDiffTempDirectory(tempDirectory: string) {
+    await rm(tempDirectory, { recursive: true, force: true }).catch(() => {
+      // Best effort temp file cleanup.
+    })
+  }
+
+  /** This shouldn't be called directly. See `Dispatcher`. */
+  public async _cleanupExternalDiffTempDirectories() {
+    await this.cleanupExternalDiffTempDirectories()
+  }
+
+  private async cleanupExternalDiffTempDirectories() {
+    try {
+      const entries = await readdir(tmpdir(), { withFileTypes: true })
+      const directoriesToRemove = entries
+        .filter(
+          entry =>
+            entry.isDirectory() &&
+            entry.name.startsWith(ExternalDiffTempDirectoryPrefix)
+        )
+        .map(entry => Path.join(tmpdir(), entry.name))
+
+      await Promise.all(
+        directoriesToRemove.map(directory =>
+          this.removeExternalDiffTempDirectory(directory)
+        )
+      )
+    } catch {
+      // Best effort startup/shutdown cleanup.
+    }
   }
 
   /** This shouldn't be called directly. See `Dispatcher`. */
@@ -2269,6 +2915,15 @@ export class AppStore extends TypedBaseStore<IAppState> {
     repository: Repository,
     lastPush: Date | null
   ): Promise<boolean> {
+    if (!isRepositoryAutoUpdateEnabled(repository)) {
+      log.debug(
+        `Skipping background fetch because automatic updates are disabled for '${nameOf(
+          repository
+        )}'`
+      )
+      return false
+    }
+
     const gitStore = this.gitStoreCache.get(repository)
     const lastFetched = await gitStore.updateLastFetched()
 
@@ -2315,6 +2970,15 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
 
     if (!repository.gitHubRepository) {
+      return
+    }
+
+    if (!isRepositoryAutoUpdateEnabled(repository)) {
+      log.debug(
+        `Skipping background fetcher start because automatic updates are disabled for '${nameOf(
+          repository
+        )}'`
+      )
       return
     }
 
@@ -2504,6 +3168,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
     this.useCustomShell =
       enableCustomIntegration() && getBoolean(useCustomShellKey, false)
     this.customShell = getObject<ICustomIntegration>(customShellKey) ?? null
+    this.useCustomExternalDiff = getBoolean(useCustomExternalDiffKey, false)
+    this.customExternalDiff =
+      getObject<ICustomIntegration>(customExternalDiffKey) ?? null
 
     // Migrate custom editor and shell to the new format if needed. This
     // will persist the new format to local storage.
@@ -2516,6 +3183,14 @@ export class AppStore extends TypedBaseStore<IAppState> {
     if (migratedCustomShell !== null) {
       this._setCustomShell(migratedCustomShell)
     }
+    const migratedCustomExternalDiff = migratedCustomIntegration(
+      this.customExternalDiff
+    )
+    if (migratedCustomExternalDiff !== null) {
+      this._setCustomExternalDiff(migratedCustomExternalDiff)
+    }
+
+    await this.cleanupExternalDiffTempDirectories()
 
     this.pullRequestSuggestedNextAction =
       getEnum(
@@ -2561,6 +3236,27 @@ export class AppStore extends TypedBaseStore<IAppState> {
       false
     )
 
+    this.codexCliCommand =
+      localStorage.getItem(codexCliCommandKey) ?? defaultCodexCliCommand
+    this.codexCliModel =
+      localStorage.getItem(codexCliModelKey) ?? defaultCodexCliModel
+    this.codexCliVersion = localStorage.getItem(codexCliVersionKey)
+    this.codexCliCheckedAt = getNumber(codexCliCheckedAtKey) ?? null
+
+    const savedCodexStatus = localStorage.getItem(codexCliStatusKey)
+    if (
+      savedCodexStatus === 'ready' ||
+      savedCodexStatus === 'missing' ||
+      savedCodexStatus === 'checking' ||
+      savedCodexStatus === 'error'
+    ) {
+      this.codexCliStatus = savedCodexStatus
+    } else {
+      this.codexCliStatus = 'missing'
+    }
+
+    this.codexCliLastError = localStorage.getItem(codexCliLastErrorKey)
+
     this.showChangesFilter = getBoolean(
       showChangesFilterKey,
       showChangesFilterDefault
@@ -2572,6 +3268,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
     this.emitUpdateNow()
 
     this.accountsStore.refresh()
+
+    // Don't block startup on CLI availability checks.
+    void this._checkCodexCliAvailability()
 
     this.updateMenuLabelsForSelectedRepository()
   }
@@ -4037,7 +4736,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
     // Note that this method should never leak the actual repositories
     // instance since that's a mutable array. We should always return
     // a copy.
-    return this.repositories.filter(x => x !== this.selectedRepository)
+    return this.repositories.filter(
+      x => x !== this.selectedRepository && isRepositoryAutoUpdateEnabled(x)
+    )
   }
 
   /**
@@ -5984,11 +6685,12 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
   public async _promptOverrideWithGeneratedCommitMessage(
     repository: Repository,
-    filesSelected: ReadonlyArray<WorkingDirectoryFileChange>
+    filesSelected: ReadonlyArray<WorkingDirectoryFileChange>,
+    generator: CommitMessageGenerator = 'copilot'
   ): Promise<void> {
     if (!this.confirmCommitMessageOverride) {
       // If user has disabled the confirmation, directly generate commit message
-      await this._generateCommitMessage(repository, filesSelected)
+      await this._generateCommitMessage(repository, filesSelected, generator)
       return
     }
 
@@ -5996,6 +6698,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
       type: PopupType.GenerateCommitMessageOverrideWarning,
       repository,
       filesSelected,
+      generator,
     })
   }
 
@@ -6060,8 +6763,13 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
   public async _generateCommitMessage(
     repository: Repository,
-    filesSelected: ReadonlyArray<WorkingDirectoryFileChange>
+    filesSelected: ReadonlyArray<WorkingDirectoryFileChange>,
+    generator: CommitMessageGenerator = 'copilot'
   ): Promise<boolean> {
+    if (generator === 'codex') {
+      return this.generateCommitMessageWithCodex(repository, filesSelected)
+    }
+
     const account = getAccountForCommitMessageGeneration(
       this.accounts,
       repository
@@ -6136,6 +6844,104 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
       return true
     })
+  }
+
+  private getCodexCliUnavailableMessage(status: CodexCliStatus): string {
+    switch (status) {
+      case 'missing':
+        return `Codex CLI is not installed. Run: ${defaultCodexInstallCommand}`
+      case 'checking':
+        return 'Checking Codex CLI availability. Try again in a moment.'
+      case 'error':
+        return (
+          this.codexCliLastError ??
+          `Codex CLI failed to run. Ensure "${this.codexCliCommand}" points to a working command.`
+        )
+      case 'ready':
+        return ''
+      default:
+        return assertNever(status, `Unknown Codex CLI status: ${status}`)
+    }
+  }
+
+  private async generateCommitMessageWithCodex(
+    repository: Repository,
+    _filesSelected: ReadonlyArray<WorkingDirectoryFileChange>
+  ): Promise<boolean> {
+    if (this.codexCliStatus !== 'ready') {
+      await this._checkCodexCliAvailability()
+    }
+
+    if (this.codexCliStatus !== 'ready') {
+      this.emitError(
+        new ErrorWithMetadata(
+          new Error(this.getCodexCliUnavailableMessage(this.codexCliStatus)),
+          {
+            repository,
+          }
+        )
+      )
+      return false
+    }
+
+    return this.withIsGeneratingCommitMessage(repository, async () => {
+      try {
+        await this.launchCodexCommitInCommandWindow(repository)
+      } catch (e) {
+        const summary = e instanceof Error ? e.message : String(e)
+        this.codexCliStatus = 'error'
+        this.codexCliLastError = summary
+        this.codexCliVersion = null
+        this.codexCliCheckedAt = Date.now()
+
+        localStorage.setItem(codexCliStatusKey, this.codexCliStatus)
+        localStorage.removeItem(codexCliVersionKey)
+        setNumber(codexCliCheckedAtKey, this.codexCliCheckedAt)
+        localStorage.setItem(codexCliLastErrorKey, this.codexCliLastError)
+
+        this.emitUpdate()
+        this.emitError(
+          new ErrorWithMetadata(e, {
+            repository,
+          })
+        )
+        return false
+      }
+
+      return true
+    })
+  }
+
+  private async launchCodexCommitInCommandWindow(repository: Repository) {
+    if (!__WIN32__) {
+      await this._openShell(repository.path)
+      return
+    }
+
+    const invocation = buildCodexCliCommitInTerminalInvocation(
+      this.codexCliCommand
+    )
+    const quoteForCmd = (arg: string) => {
+      const escaped = arg.replace(/"/g, '""')
+      return /[\s"]/u.test(escaped) ? `"${escaped}"` : escaped
+    }
+
+    const command = [invocation.executable, ...invocation.args]
+      .map(quoteForCmd)
+      .join(' ')
+    const windowsCmdPath =
+      process.env.comspec ?? 'C:\\Windows\\System32\\cmd.exe'
+
+    const child = spawnCustomIntegration(
+      'START',
+      ['"Codex Commit"', `"${windowsCmdPath}"`, '/d', '/k', command],
+      {
+        shell: true,
+        cwd: repository.path,
+        windowsHide: false,
+      }
+    )
+    child.on('error', error => this._pushError(error))
   }
 
   /**
@@ -8970,6 +9776,73 @@ export class AppStore extends TypedBaseStore<IAppState> {
     setObject(customShellKey, customShell)
     this.customShell = customShell
     this.emitUpdate()
+  }
+
+  public _setUseCustomExternalDiff(useCustomExternalDiff: boolean) {
+    setBoolean(useCustomExternalDiffKey, useCustomExternalDiff)
+    this.useCustomExternalDiff = useCustomExternalDiff
+    this.emitUpdate()
+  }
+
+  public _setCustomExternalDiff(customExternalDiff: ICustomIntegration) {
+    setObject(customExternalDiffKey, customExternalDiff)
+    this.customExternalDiff = customExternalDiff
+    this.emitUpdate()
+  }
+
+  public _setCodexCliCommand(command: string) {
+    const trimmedCommand = command.trim()
+    const nextCommand =
+      trimmedCommand.length > 0 ? trimmedCommand : defaultCodexCliCommand
+
+    this.codexCliCommand = nextCommand
+    localStorage.setItem(codexCliCommandKey, nextCommand)
+    this.emitUpdate()
+
+    return this._checkCodexCliAvailability()
+  }
+
+  public _setCodexCliModel(model: string) {
+    this.codexCliModel = model.trim()
+    localStorage.setItem(codexCliModelKey, this.codexCliModel)
+    this.emitUpdate()
+  }
+
+  public async _checkCodexCliAvailability() {
+    this.codexCliStatus = 'checking'
+    this.codexCliLastError = null
+    localStorage.setItem(codexCliStatusKey, this.codexCliStatus)
+    localStorage.removeItem(codexCliLastErrorKey)
+    this.emitUpdate()
+
+    const result = await checkCodexCliAvailability(this.codexCliCommand)
+
+    this.codexCliStatus = result.status
+    this.codexCliVersion = result.version
+    this.codexCliCheckedAt = result.checkedAt
+    this.codexCliLastError = result.error
+
+    localStorage.setItem(codexCliStatusKey, this.codexCliStatus)
+    if (this.codexCliVersion === null) {
+      localStorage.removeItem(codexCliVersionKey)
+    } else {
+      localStorage.setItem(codexCliVersionKey, this.codexCliVersion)
+    }
+
+    if (this.codexCliCheckedAt === null) {
+      localStorage.removeItem(codexCliCheckedAtKey)
+    } else {
+      setNumber(codexCliCheckedAtKey, this.codexCliCheckedAt)
+    }
+
+    if (this.codexCliLastError === null) {
+      localStorage.removeItem(codexCliLastErrorKey)
+    } else {
+      localStorage.setItem(codexCliLastErrorKey, this.codexCliLastError)
+    }
+
+    this.emitUpdate()
+    return result
   }
 
   /** This shouldn't be called directly. See `Dispatcher`. */

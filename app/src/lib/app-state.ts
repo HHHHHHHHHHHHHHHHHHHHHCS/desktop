@@ -370,6 +370,12 @@ export interface IAppState {
   /** Info needed to launch a custom shell chosen by the user. */
   readonly customShell: ICustomIntegration | null
 
+  /** Whether or not the user wants to use a custom external diff tool. */
+  readonly useCustomExternalDiff: boolean
+
+  /** Info needed to launch a custom external diff tool. */
+  readonly customExternalDiff: ICustomIntegration | null
+
   /**
    * Whether or not the CI status popover is visible.
    */
@@ -411,6 +417,24 @@ export interface IAppState {
 
   readonly alwaysUseCopilotForConflictResolution: boolean
 
+  /** The configured command used to invoke Codex CLI. */
+  readonly codexCliCommand: string
+
+  /** The configured model used when invoking Codex CLI for commit generation. */
+  readonly codexCliModel: string
+
+  /** The most recently detected Codex CLI version string. */
+  readonly codexCliVersion: string | null
+
+  /** Timestamp of the most recent Codex CLI availability check. */
+  readonly codexCliCheckedAt: number | null
+
+  /** Current Codex CLI availability state. */
+  readonly codexCliStatus: CodexCliStatus
+
+  /** Summary of the latest Codex CLI check or invocation error. */
+  readonly codexCliLastError: string | null
+
   /** Whether the changes filter is shown */
   readonly showChangesFilter: boolean
 
@@ -432,6 +456,8 @@ export interface IAppState {
    */
   readonly byokProviders: ReadonlyArray<IBYOKProvider>
 }
+
+export type CodexCliStatus = 'ready' | 'missing' | 'checking' | 'error'
 
 export enum FoldoutType {
   Repository,
@@ -900,6 +926,11 @@ export enum ComparisonMode {
   Behind = 'Behind',
 }
 
+/** The compare commit search mode. */
+export type CompareCommitSearchType = 'author' | 'message' | 'sha' | 'path'
+
+export const defaultCompareCommitSearchType: CompareCommitSearchType = 'message'
+
 /**
  * The default comparison state is to display the history for the current
  * branch.
@@ -947,6 +978,27 @@ export interface ICompareState {
   /** The SHAs of commits to highlight in the compare list */
   readonly shasToHighlight: ReadonlyArray<string>
 
+  /** The committed compare search type. */
+  readonly searchType: CompareCommitSearchType
+
+  /** The committed compare search text. */
+  readonly searchText: string
+
+  /** Whether a compare search request is currently loading. */
+  readonly isSearchLoading: boolean
+
+  /** Whether the current compare search has no matching commits. */
+  readonly isSearchResultsEmpty: boolean
+
+  /** Whether there may be more compare search results to load. */
+  readonly hasMoreSearchResults: boolean
+
+  /** The current compare search cursor for incremental loading. */
+  readonly searchCursor: number
+
+  /** Whether the latest compare search batch timed out. */
+  readonly didSearchTimeout: boolean
+
   /**
    * A list of branches (remote and local) except the current branch, and
    * Desktop fork remote branches (see `Branch.isDesktopForkRemoteBranch`)
@@ -980,6 +1032,9 @@ export interface ICompareFormUpdate {
 
   /** Thew new state of the branches list */
   readonly showBranchList: boolean
+
+  /** The compare commit search type. */
+  readonly searchType: CompareCommitSearchType
 }
 
 export interface IViewHistory {

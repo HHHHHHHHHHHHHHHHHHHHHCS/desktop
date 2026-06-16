@@ -11,6 +11,7 @@ import { SelectedCommits, CompareSidebar } from './history'
 import { Resizable } from './resizable'
 import { TabBar } from './tab-bar'
 import {
+  CodexCliStatus,
   IRepositoryState,
   RepositorySectionTab,
   ChangesSelectionKind,
@@ -21,6 +22,7 @@ import { Dispatcher } from './dispatcher'
 import { IssuesStore, GitHubUserStore } from '../lib/stores'
 import { assertNever } from '../lib/fatal-error'
 import { Account } from '../models/account'
+import { ICustomIntegration } from '../lib/custom-integration'
 import { FocusContainer } from './lib/focus-container'
 import { ImageDiffType } from '../models/diff'
 import { IMenu } from '../models/app-menu'
@@ -63,6 +65,10 @@ interface IRepositoryViewProps {
   readonly showCommitLengthWarning: boolean
   readonly accounts: ReadonlyArray<Account>
   readonly shouldShowGenerateCommitMessageCallOut: boolean
+  readonly codexCliStatus: CodexCliStatus
+  readonly codexCliLastError: string | null
+  readonly useCustomExternalDiff: boolean
+  readonly customExternalDiff: ICustomIntegration | null
 
   /**
    * A value indicating whether or not the application is currently presenting
@@ -279,6 +285,10 @@ export class RepositoryView extends React.Component<
         repository={this.props.repository}
         dispatcher={this.props.dispatcher}
         changes={this.props.state.changesState}
+        canDiffMultipleFiles={
+          this.props.useCustomExternalDiff &&
+          this.props.customExternalDiff !== null
+        }
         aheadBehind={this.props.state.aheadBehind}
         branch={branchName}
         commitAuthor={this.props.state.commitAuthor}
@@ -295,6 +305,8 @@ export class RepositoryView extends React.Component<
             : undefined
         }
         isGeneratingCommitMessage={this.props.state.isGeneratingCommitMessage}
+        codexCliStatus={this.props.codexCliStatus}
+        codexCliLastError={this.props.codexCliLastError}
         shouldShowGenerateCommitMessageCallOut={
           this.props.shouldShowGenerateCommitMessageCallOut
         }

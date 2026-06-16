@@ -22,7 +22,7 @@ import {
   ICommitMessage,
   DefaultCommitMessage,
 } from '../../models/commit-message'
-import { ComparisonMode } from '../app-state'
+import { CompareCommitSearchType, ComparisonMode } from '../app-state'
 
 import { IAppShell } from '../app-shell'
 import {
@@ -102,11 +102,22 @@ import { findDefaultBranch } from '../find-default-branch'
 
 /** The number of commits to load from history per batch. */
 const CommitBatchSize = 100
+const ShaSearchScanBatchSize = 250
 
 const LoadingHistoryRequestKey = 'history'
 
 /** The max number of recent branches to find. */
 const RecentBranchesLimit = 5
+
+export interface ICompareCommitSearchBatch {
+  readonly shas: ReadonlyArray<string>
+  readonly nextCursor: number
+  readonly hasMoreResults: boolean
+}
+
+interface IKillableProcess {
+  kill: () => boolean
+}
 
 /** The store for a repository's git data. */
 export class GitStore extends BaseStore {
@@ -156,6 +167,10 @@ export class GitStore extends BaseStore {
   private _desktopStashEntries = new Map<string, IStashEntry>()
 
   private _stashEntryCount = 0
+
+  private activeCompareSearchProcess: IKillableProcess | null = null
+
+  private compareSearchCancellationId = 0
 
   public constructor(
     private readonly repository: Repository,
@@ -1737,6 +1752,218 @@ export class GitStore extends BaseStore {
       commits,
       ahead: aheadBehind.ahead,
       behind: aheadBehind.behind,
+    }
+  }
+
+  public async searchCompareCommits(
+    branch: Branch,
+    comparisonMode: ComparisonMode,
+    searchType: CompareCommitSearchType,
+    searchText: string,
+    cursor: number
+  ): Promise<ICompareCommitSearchBatch | null> {
+    if (this.tip.kind !== TipState.Valid) {
+      return null
+    }
+
+    const base = this.tip.branch
+    const revisionRange =
+      comparisonMode === ComparisonMode.Ahead
+        ? revRange(branch.name, base.name)
+        : revRange(base.name, branch.name)
+
+    return this.searchCommitsInRevisionRange(
+      revisionRange,
+      searchType,
+      searchText,
+      cursor
+    )
+  }
+
+  public async searchCurrentBranchCommits(
+    searchType: CompareCommitSearchType,
+    searchText: string,
+    cursor: number
+  ): Promise<ICompareCommitSearchBatch | null> {
+    return this.searchCommitsInRevisionRange(
+      'HEAD',
+      searchType,
+      searchText,
+      cursor
+    )
+  }
+
+  private async searchCommitsInRevisionRange(
+    revisionRange: string,
+    searchType: CompareCommitSearchType,
+    searchText: string,
+    cursor: number
+  ): Promise<ICompareCommitSearchBatch | null> {
+    if (searchType === 'sha') {
+      return this.searchCompareCommitsBySHA(revisionRange, searchText, cursor)
+    }
+
+    const trimmedQuery = searchText.trim()
+    const additionalArgs: string[] = []
+    let paths: string[] = []
+
+    if (searchType === 'author') {
+      additionalArgs.push(
+        `--author=${trimmedQuery}`,
+        '--regexp-ignore-case',
+        '--fixed-strings'
+      )
+    } else if (searchType === 'message') {
+      additionalArgs.push(
+        `--grep=${trimmedQuery}`,
+        '--regexp-ignore-case',
+        '--fixed-strings'
+      )
+    } else if (searchType === 'path') {
+      paths = [trimmedQuery]
+    }
+
+    const commits = await this.getCompareSearchCommits(
+      revisionRange,
+      CommitBatchSize,
+      cursor,
+      additionalArgs,
+      paths
+    )
+
+    if (commits == null) {
+      return null
+    }
+
+    this.storeCommits(commits)
+
+    return {
+      shas: commits.map(commit => commit.sha),
+      nextCursor: cursor + commits.length,
+      hasMoreResults: commits.length === CommitBatchSize,
+    }
+  }
+
+  private async searchCompareCommitsBySHA(
+    revisionRange: string,
+    searchText: string,
+    cursor: number
+  ): Promise<ICompareCommitSearchBatch | null> {
+    const lowerCaseSearchText = searchText.trim().toLowerCase()
+    const matchedCommits = new Array<Commit>()
+    let nextCursor = cursor
+    let exhausted = false
+
+    while (matchedCommits.length < CommitBatchSize) {
+      const commits = await this.getCompareSearchCommits(
+        revisionRange,
+        ShaSearchScanBatchSize,
+        nextCursor
+      )
+
+      if (commits == null) {
+        return null
+      }
+
+      if (commits.length === 0) {
+        exhausted = true
+        break
+      }
+
+      let consumed = 0
+      for (const commit of commits) {
+        consumed++
+        if (commit.sha.toLowerCase().includes(lowerCaseSearchText)) {
+          matchedCommits.push(commit)
+          if (matchedCommits.length === CommitBatchSize) {
+            break
+          }
+        }
+      }
+
+      nextCursor += consumed
+
+      if (consumed < commits.length) {
+        break
+      }
+
+      if (commits.length < ShaSearchScanBatchSize) {
+        exhausted = true
+        break
+      }
+    }
+
+    this.storeCommits(matchedCommits)
+
+    return {
+      shas: matchedCommits.map(commit => commit.sha),
+      nextCursor,
+      hasMoreResults: exhausted === false,
+    }
+  }
+
+  public cancelCompareCommitSearch() {
+    this.compareSearchCancellationId += 1
+
+    const process = this.activeCompareSearchProcess
+    this.activeCompareSearchProcess = null
+
+    if (process !== null) {
+      try {
+        process.kill()
+      } catch {
+        // Best effort process cancellation for compare search.
+      }
+    }
+  }
+
+  private async getCompareSearchCommits(
+    revisionRange: string,
+    limit: number,
+    skip: number,
+    additionalArgs: ReadonlyArray<string> = [],
+    paths: ReadonlyArray<string> = []
+  ): Promise<ReadonlyArray<Commit> | null> {
+    const cancellationId = this.compareSearchCancellationId
+    let processForRequest: IKillableProcess | null = null
+
+    try {
+      const commits = await getCommits(
+        this.repository,
+        revisionRange,
+        limit,
+        skip,
+        additionalArgs,
+        paths,
+        process => {
+          processForRequest = process
+          this.activeCompareSearchProcess = process
+        }
+      )
+
+      if (this.compareSearchCancellationId !== cancellationId) {
+        return null
+      }
+
+      return commits
+    } catch (e) {
+      if (this.compareSearchCancellationId !== cancellationId) {
+        return null
+      }
+
+      this.emitError(
+        new ErrorWithMetadata(e, {
+          repository: this.repository,
+        })
+      )
+      return null
+    } finally {
+      if (
+        processForRequest !== null &&
+        this.activeCompareSearchProcess === processForRequest
+      ) {
+        this.activeCompareSearchProcess = null
+      }
     }
   }
 

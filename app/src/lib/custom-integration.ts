@@ -17,6 +17,8 @@ export const WindowsExecutableExtensions: ReadonlyArray<string> = ['exe', 'com']
 
 /** The string that will be replaced by the target path in the custom integration arguments */
 export const TargetPathArgument = '%TARGET_PATH%'
+export const LeftPathArgument = '%LEFT_PATH%'
+export const RightPathArgument = '%RIGHT_PATH%'
 
 /** The interface representing a custom integration (external editor or shell) */
 export interface ICustomIntegration {
@@ -37,6 +39,21 @@ export function parseCustomIntegrationArguments(
   args: string
 ): ReadonlyArray<string> {
   return __WIN32__ ? parseCommandLineArgv(args) : stringArgv(args)
+}
+
+/**
+ * Check if the provided placeholders are present in the custom integration arguments.
+ *
+ * @param args The custom integration arguments
+ * @param placeholders Placeholders that must be present at least once
+ */
+export function checkRequiredCustomIntegrationArguments(
+  args: ReadonlyArray<string>,
+  placeholders: ReadonlyArray<string>
+): boolean {
+  return placeholders.every(placeholder =>
+    args.some(arg => arg.includes(placeholder))
+  )
 }
 
 // Function to retrieve, on macOS, the bundleId of an app given its path
@@ -81,18 +98,33 @@ export function expandTargetPathArgument(
   args: ReadonlyArray<string>,
   repoPath: string
 ): ReadonlyArray<string> {
-  // Only strip quotes when the entire argument is the quoted placeholder.
-  // Otherwise preserve any user-provided quoting and replace the placeholder
-  // in place.
-  return args.map(arg => {
-    if (
-      arg === `'${TargetPathArgument}'` ||
-      arg === `"${TargetPathArgument}"`
-    ) {
-      return repoPath
-    }
+  return expandCustomIntegrationArguments(args, {
+    // If the placeholder is already quoted, replace that form first to avoid
+    // producing nested quotes when the command is run through a shell.
+    [`"${TargetPathArgument}"`]: `"${repoPath}"`,
+    [TargetPathArgument]: `"${repoPath}"`,
+  })
+}
 
-    return arg.replaceAll(TargetPathArgument, repoPath)
+/**
+ * Replace placeholders in custom integration arguments.
+ *
+ * @param args The custom integration arguments
+ * @param replacements The placeholder/value map
+ */
+export function expandCustomIntegrationArguments(
+  args: ReadonlyArray<string>,
+  replacements: Readonly<Record<string, string>>
+): ReadonlyArray<string> {
+  return args.map(arg => {
+    let expandedArg = arg
+    for (const placeholder of Object.keys(replacements)) {
+      expandedArg = expandedArg.replaceAll(
+        placeholder,
+        replacements[placeholder]
+      )
+    }
+    return expandedArg
   })
 }
 
@@ -102,7 +134,7 @@ export function expandTargetPathArgument(
  * @param args The custom integration arguments
  */
 export function checkTargetPathArgument(args: ReadonlyArray<string>): boolean {
-  return args.some(arg => arg.includes(TargetPathArgument))
+  return checkRequiredCustomIntegrationArguments(args, [TargetPathArgument])
 }
 
 /**
@@ -167,13 +199,31 @@ export async function validateCustomIntegrationPath(
 export async function isValidCustomIntegration(
   customIntegration: ICustomIntegration
 ): Promise<boolean> {
+  return isValidCustomIntegrationWithPlaceholders(customIntegration, [
+    TargetPathArgument,
+  ])
+}
+
+/**
+ * Check if a custom integration is valid for the provided argument placeholders.
+ *
+ * @param customIntegration The custom integration to validate
+ * @param requiredPlaceholders Placeholders that must be present in arguments
+ */
+export async function isValidCustomIntegrationWithPlaceholders(
+  customIntegration: ICustomIntegration,
+  requiredPlaceholders: ReadonlyArray<string>
+): Promise<boolean> {
   try {
     const pathResult = await validateCustomIntegrationPath(
       customIntegration.path
     )
     const argv = parseCustomIntegrationArguments(customIntegration.arguments)
-    const targetPathPresent = checkTargetPathArgument(argv)
-    return pathResult.isValid && targetPathPresent
+    const requiredArgumentsPresent = checkRequiredCustomIntegrationArguments(
+      argv,
+      requiredPlaceholders
+    )
+    return pathResult.isValid && requiredArgumentsPresent
   } catch (e) {
     log.error('Failed to validate custom integration:', e)
     return false

@@ -72,6 +72,7 @@ import { FetchType } from '../../models/fetch'
 import { GitHubRepository } from '../../models/github-repository'
 import { ManualConflictResolution } from '../../models/manual-conflict-resolution'
 import { Popup, PopupType } from '../../models/popup'
+import { CommitMessageGenerator } from '../../models/popup'
 import {
   PullRequest,
   PullRequestSuggestedNextAction,
@@ -289,6 +290,27 @@ export class Dispatcher {
     file: CommittedFileChange
   ): Promise<void> {
     return this.appStore._changeFileSelection(repository, file)
+  }
+
+  public diffFileInHistory(
+    repository: Repository,
+    file: CommittedFileChange
+  ): Promise<void> {
+    return this.appStore._diffFileInHistory(repository, file)
+  }
+
+  public diffFileInChanges(
+    repository: Repository,
+    file: WorkingDirectoryFileChange
+  ): Promise<void> {
+    return this.appStore._diffFileInChanges(repository, file)
+  }
+
+  public diffFilesInChanges(
+    repository: Repository,
+    files: ReadonlyArray<WorkingDirectoryFileChange>
+  ): Promise<void> {
+    return this.appStore._diffFilesInChanges(repository, files)
   }
 
   /** Set the repository filter text. */
@@ -1153,11 +1175,13 @@ export class Dispatcher {
 
   public promptOverrideWithGeneratedCommitMessage(
     repository: Repository,
-    filesSelected: ReadonlyArray<WorkingDirectoryFileChange>
+    filesSelected: ReadonlyArray<WorkingDirectoryFileChange>,
+    generator: CommitMessageGenerator = 'copilot'
   ) {
     return this.appStore._promptOverrideWithGeneratedCommitMessage(
       repository,
-      filesSelected
+      filesSelected,
+      generator
     )
   }
 
@@ -1167,9 +1191,26 @@ export class Dispatcher {
 
   public generateCommitMessage(
     repository: Repository,
-    filesSelected: ReadonlyArray<WorkingDirectoryFileChange>
+    filesSelected: ReadonlyArray<WorkingDirectoryFileChange>,
+    generator: CommitMessageGenerator = 'copilot'
   ) {
-    return this.appStore._generateCommitMessage(repository, filesSelected)
+    return this.appStore._generateCommitMessage(
+      repository,
+      filesSelected,
+      generator
+    )
+  }
+
+  public setCodexCliCommand(command: string) {
+    return this.appStore._setCodexCliCommand(command)
+  }
+
+  public setCodexCliModel(model: string) {
+    return this.appStore._setCodexCliModel(model)
+  }
+
+  public checkCodexCliAvailability() {
+    return this.appStore._checkCodexCliAvailability()
   }
 
   /**
@@ -2529,6 +2570,18 @@ export class Dispatcher {
     return this.appStore._updateCompareForm(repository, newState)
   }
 
+  public submitCompareCommitSearch(repository: Repository, searchText: string) {
+    return this.appStore._submitCompareCommitSearch(repository, searchText)
+  }
+
+  public loadNextCompareCommitSearchBatch(repository: Repository) {
+    return this.appStore._loadNextCompareCommitSearchBatch(repository)
+  }
+
+  public cancelCompareCommitSearch(repository: Repository) {
+    return this.appStore._cancelCompareCommitSearch(repository)
+  }
+
   /**
    *  update the manual resolution method for a file
    */
@@ -3405,6 +3458,18 @@ export class Dispatcher {
   /** Set the custom shell info */
   public setCustomShell(customShell: ICustomIntegration) {
     this.appStore._setCustomShell(customShell)
+  }
+
+  public setUseCustomExternalDiff(useCustomExternalDiff: boolean) {
+    this.appStore._setUseCustomExternalDiff(useCustomExternalDiff)
+  }
+
+  public setCustomExternalDiff(customExternalDiff: ICustomIntegration) {
+    this.appStore._setCustomExternalDiff(customExternalDiff)
+  }
+
+  public cleanupExternalDiffTempDirectories() {
+    return this.appStore._cleanupExternalDiffTempDirectories()
   }
 
   public async reorderCommits(

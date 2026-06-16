@@ -122,7 +122,9 @@ export async function getCommits(
   revisionRange?: string,
   limit?: number,
   skip?: number,
-  additionalArgs: ReadonlyArray<string> = []
+  additionalArgs: ReadonlyArray<string> = [],
+  paths: ReadonlyArray<string> = [],
+  onProcessSpawned?: (process: { kill: () => boolean }) => void
 ): Promise<ReadonlyArray<Commit>> {
   const { formatArgs, parse } = createLogParser({
     sha: '%H', // SHA
@@ -160,11 +162,13 @@ export async function getCommits(
     '--no-show-signature',
     '--no-color',
     ...additionalArgs,
-    '--'
+    '--',
+    ...paths
   )
   const result = await git(args, repository.path, 'getCommits', {
     successExitCodes: new Set([0, 128]),
     encoding: 'buffer',
+    processCallback: process => onProcessSpawned?.(process),
   })
 
   // if the repository has an unborn HEAD, return an empty history of commits

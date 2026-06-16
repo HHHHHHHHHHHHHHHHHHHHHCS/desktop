@@ -8,6 +8,7 @@ import {
 } from '../../models/status'
 import { Tip, TipState } from '../../models/tip'
 import {
+  defaultCompareCommitSearchType,
   HistoryTabMode,
   IBranchesState,
   IChangesState,
@@ -393,6 +394,13 @@ function getInitialRepositoryState(): IRepositoryState {
       filterText: '',
       commitSHAs: [],
       shasToHighlight: [],
+      searchType: defaultCompareCommitSearchType,
+      searchText: '',
+      isSearchLoading: false,
+      isSearchResultsEmpty: false,
+      hasMoreSearchResults: false,
+      searchCursor: 0,
+      didSearchTimeout: false,
       branches: new Array<Branch>(),
       recentBranches: new Array<Branch>(),
       defaultBranch: null,
