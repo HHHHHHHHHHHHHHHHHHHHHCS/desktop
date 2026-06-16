@@ -8,6 +8,9 @@ import { suggestedExternalEditor } from '../../lib/editors/shared'
 import { CustomIntegrationForm } from './custom-integration-form'
 import { ICustomIntegration } from '../../lib/custom-integration'
 import { enableCustomIntegration } from '../../lib/feature-flag'
+import { CodexCliStatus } from '../../lib/app-state'
+import { CodexCliSettings } from './codex-cli-settings'
+import { ExternalDiffSettings } from './external-diff-settings'
 
 const CustomIntegrationValue = 'other'
 
@@ -20,12 +23,27 @@ interface IIntegrationsPreferencesProps {
   readonly customEditor: ICustomIntegration
   readonly useCustomShell: boolean
   readonly customShell: ICustomIntegration
+  readonly useCustomExternalDiff: boolean
+  readonly customExternalDiff: ICustomIntegration
   readonly onSelectedEditorChanged: (editor: string) => void
   readonly onSelectedShellChanged: (shell: Shell) => void
   readonly onUseCustomEditorChanged: (useCustomEditor: boolean) => void
   readonly onCustomEditorChanged: (customEditor: ICustomIntegration) => void
   readonly onUseCustomShellChanged: (useCustomShell: boolean) => void
   readonly onCustomShellChanged: (customShell: ICustomIntegration) => void
+  readonly onUseCustomExternalDiffChanged: (enabled: boolean) => void
+  readonly onCustomExternalDiffChanged: (
+    customExternalDiff: ICustomIntegration
+  ) => void
+  readonly codexCliCommand: string
+  readonly codexCliStatus: CodexCliStatus
+  readonly codexCliVersion: string | null
+  readonly codexCliCheckedAt: number | null
+  readonly codexCliLastError: string | null
+  readonly codexCliModel: string
+  readonly onCodexCliCommandChanged: (command: string) => void
+  readonly onCodexCliModelChanged: (model: string) => void
+  readonly onCheckCodexCliAvailability: () => Promise<void>
 }
 
 interface IIntegrationsPreferencesState {
@@ -35,6 +53,10 @@ interface IIntegrationsPreferencesState {
   readonly customEditor: ICustomIntegration
   readonly useCustomShell: boolean
   readonly customShell: ICustomIntegration
+  readonly useCustomExternalDiff: boolean
+  readonly customExternalDiff: ICustomIntegration
+  readonly codexCliCommand: string
+  readonly codexCliModel: string
 }
 
 export class Integrations extends React.Component<
@@ -54,6 +76,10 @@ export class Integrations extends React.Component<
       customEditor: this.props.customEditor,
       useCustomShell: this.props.useCustomShell,
       customShell: this.props.customShell,
+      useCustomExternalDiff: this.props.useCustomExternalDiff,
+      customExternalDiff: this.props.customExternalDiff,
+      codexCliCommand: this.props.codexCliCommand,
+      codexCliModel: this.props.codexCliModel,
     }
   }
 
@@ -88,6 +114,10 @@ export class Integrations extends React.Component<
       useCustomShell: nextProps.useCustomShell,
       customShell: nextProps.customShell,
       customEditor: nextProps.customEditor,
+      useCustomExternalDiff: nextProps.useCustomExternalDiff,
+      customExternalDiff: nextProps.customExternalDiff,
+      codexCliCommand: nextProps.codexCliCommand,
+      codexCliModel: nextProps.codexCliModel,
     })
   }
 
@@ -128,6 +158,7 @@ export class Integrations extends React.Component<
     if (!prevState.useCustomShell && this.state.useCustomShell) {
       this.customShellFormRef.current?.focus()
     }
+
   }
 
   private onSelectedEditorChanged = (
@@ -351,6 +382,55 @@ export class Integrations extends React.Component<
     this.props.onCustomShellChanged(customShell)
   }
 
+  private renderExternalDiffSettings() {
+    return (
+      <ExternalDiffSettings
+        useCustomExternalDiff={this.state.useCustomExternalDiff}
+        customExternalDiff={this.state.customExternalDiff}
+        onUseCustomExternalDiffChanged={this.onUseCustomExternalDiffChanged}
+        onCustomExternalDiffChanged={this.onCustomExternalDiffChanged}
+      />
+    )
+  }
+
+  private onUseCustomExternalDiffChanged = (useCustomExternalDiff: boolean) => {
+    this.setState({ useCustomExternalDiff })
+    this.props.onUseCustomExternalDiffChanged(useCustomExternalDiff)
+  }
+
+  private onCustomExternalDiffChanged = (
+    customExternalDiff: ICustomIntegration
+  ) => {
+    this.setState({ customExternalDiff })
+    this.props.onCustomExternalDiffChanged(customExternalDiff)
+  }
+
+  private renderCodexCliSettings() {
+    return (
+      <CodexCliSettings
+        command={this.state.codexCliCommand}
+        model={this.state.codexCliModel}
+        status={this.props.codexCliStatus}
+        version={this.props.codexCliVersion}
+        checkedAt={this.props.codexCliCheckedAt}
+        lastError={this.props.codexCliLastError}
+        onCommandChanged={this.onCodexCliCommandChanged}
+        onModelChanged={this.onCodexCliModelChanged}
+        onCheckAvailability={this.props.onCheckCodexCliAvailability}
+      />
+    )
+  }
+
+  private onCodexCliCommandChanged = (codexCliCommand: string) => {
+    this.setState({ codexCliCommand })
+    this.props.onCodexCliCommandChanged(codexCliCommand)
+  }
+
+  private onCodexCliModelChanged = (codexCliModel: string) => {
+    this.setState({ codexCliModel })
+    this.props.onCodexCliModelChanged(codexCliModel)
+  }
+
   public render() {
     if (!enableCustomIntegration()) {
       return (
@@ -358,6 +438,7 @@ export class Integrations extends React.Component<
           <h2>Applications</h2>
           <Row>{this.renderExternalEditor()}</Row>
           <Row>{this.renderSelectedShell()}</Row>
+          {this.renderExternalDiffSettings()}
         </DialogContent>
       )
     }
@@ -379,6 +460,8 @@ export class Integrations extends React.Component<
           <Row>{this.renderSelectedShell()}</Row>
           {this.state.useCustomShell && this.renderCustomShell()}
         </fieldset>
+        {this.renderExternalDiffSettings()}
+        {this.renderCodexCliSettings()}
       </DialogContent>
     )
   }

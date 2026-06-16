@@ -1,4 +1,22 @@
 #preferences {
+  .codex-cli-settings {
+    .codex-cli-command-row {
+      display: flex;
+      gap: var(--spacing);
+      width: 100%;
+      align-items: flex-end;
+
+      .text-box-component {
+        flex: 1;
+      }
+    }
+
+    .codex-cli-status {
+      margin-top: 0;
+      word-break: break-word;
+    }
+  }
+
   .dialog-content.git-preferences {
     padding: 0;
 

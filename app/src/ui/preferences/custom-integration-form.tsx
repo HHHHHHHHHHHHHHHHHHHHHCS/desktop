@@ -4,7 +4,7 @@ import { Button } from '../lib/button'
 import { showOpenDialog } from '../main-process-proxy'
 import { InputError } from '../lib/input-description/input-error'
 import {
-  checkTargetPathArgument,
+  checkRequiredCustomIntegrationArguments,
   validateCustomIntegrationPath,
   parseCustomIntegrationArguments,
   TargetPathArgument,
@@ -16,6 +16,7 @@ interface ICustomIntegrationFormProps {
   readonly id: string
   readonly path: string
   readonly arguments: string
+  readonly requiredArgumentPlaceholders?: ReadonlyArray<string>
   readonly onPathChanged: (path: string, bundleID?: string) => void
   readonly onArgumentsChanged: (args: string) => void
 }
@@ -122,7 +123,7 @@ export class CustomIntegrationForm extends React.Component<
 
     const errorDescription = this.state.showNonValidArgsError
       ? 'These arguments are not valid.'
-      : `Arguments must include the target path placeholder (${TargetPathArgument}).`
+      : `Arguments must include: ${this.getRequiredPlaceholdersLabel()}.`
 
     return (
       <div className="custom-integration-form-error">
@@ -184,8 +185,13 @@ export class CustomIntegrationForm extends React.Component<
   private updateArguments(args: string) {
     try {
       const argv = parseCustomIntegrationArguments(args)
+      const requiredPlaceholders = this.props.requiredArgumentPlaceholders ?? [
+        TargetPathArgument,
+      ]
 
-      if (!checkTargetPathArgument(argv)) {
+      if (
+        !checkRequiredCustomIntegrationArguments(argv, requiredPlaceholders)
+      ) {
         this.setState({
           arguments: args,
           isValidArgs: false,
@@ -217,5 +223,12 @@ export class CustomIntegrationForm extends React.Component<
 
   private onParamsChanged = (params: string) => {
     this.updateArguments(params)
+  }
+
+  private getRequiredPlaceholdersLabel() {
+    const requiredPlaceholders = this.props.requiredArgumentPlaceholders ?? [
+      TargetPathArgument,
+    ]
+    return requiredPlaceholders.join(', ')
   }
 }

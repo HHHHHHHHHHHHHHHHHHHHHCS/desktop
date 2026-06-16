@@ -27,6 +27,7 @@ import {
   UncommittedChangesStrategy,
   defaultUncommittedChangesStrategy,
 } from '../../models/uncommitted-changes-strategy'
+import { CodexCliStatus } from '../../lib/app-state'
 import { Octicon } from '../octicons'
 import * as octicons from '../octicons/octicons.generated'
 import {
@@ -51,8 +52,11 @@ import type { IBYOKProvider } from '../../lib/copilot/byok'
 import { PopupType } from '../../models/popup'
 import {
   ICustomIntegration,
+  LeftPathArgument,
+  RightPathArgument,
   TargetPathArgument,
   isValidCustomIntegration,
+  isValidCustomIntegrationWithPlaceholders,
 } from '../../lib/custom-integration'
 import {
   defaultGitHookEnvShell,
@@ -110,6 +114,8 @@ interface IPreferencesProps {
   readonly customEditor: ICustomIntegration | null
   readonly useCustomShell: boolean
   readonly customShell: ICustomIntegration | null
+  readonly useCustomExternalDiff: boolean
+  readonly customExternalDiff: ICustomIntegration | null
   readonly repositoryIndicatorsEnabled: boolean
   readonly onEditGlobalGitConfig: () => void
   readonly underlineLinks: boolean
@@ -118,6 +124,12 @@ interface IPreferencesProps {
   readonly copilotModels: ReadonlyArray<Model> | null
   readonly byokProviders: ReadonlyArray<IBYOKProvider>
   readonly alwaysUseCopilotForConflictResolution: boolean
+  readonly codexCliCommand: string
+  readonly codexCliModel: string
+  readonly codexCliStatus: CodexCliStatus
+  readonly codexCliVersion: string | null
+  readonly codexCliCheckedAt: number | null
+  readonly codexCliLastError: string | null
 }
 
 interface IPreferencesState {
@@ -150,6 +162,8 @@ interface IPreferencesState {
   readonly customEditor: ICustomIntegration
   readonly useCustomShell: boolean
   readonly customShell: ICustomIntegration
+  readonly useCustomExternalDiff: boolean
+  readonly customExternalDiff: ICustomIntegration
   readonly selectedExternalEditor: string | null
   readonly availableShells: ReadonlyArray<Shell>
   readonly selectedShell: Shell
@@ -186,6 +200,8 @@ interface IPreferencesState {
   readonly selectedTimeFormat?: TimeFormat
   readonly selectedNumberFormat?: INumberFormat
   readonly preferAbsoluteDates?: boolean
+  readonly codexCliCommand: string
+  readonly codexCliModel: string
 }
 
 /**
@@ -196,6 +212,12 @@ const DefaultCustomIntegration: ICustomIntegration = {
   path: '',
   bundleID: undefined,
   arguments: TargetPathArgument,
+}
+
+const DefaultExternalDiffIntegration: ICustomIntegration = {
+  path: '',
+  bundleID: undefined,
+  arguments: `${LeftPathArgument} ${RightPathArgument}`,
 }
 
 /** The app-level preferences component. */
@@ -220,6 +242,9 @@ export class Preferences extends React.Component<
       customEditor: this.props.customEditor ?? DefaultCustomIntegration,
       useCustomShell: this.props.useCustomShell,
       customShell: this.props.customShell ?? DefaultCustomIntegration,
+      useCustomExternalDiff: this.props.useCustomExternalDiff,
+      customExternalDiff:
+        this.props.customExternalDiff ?? DefaultExternalDiffIntegration,
       useWindowsOpenSSH: false,
       showCommitLengthWarning: false,
       notificationsEnabled: true,
@@ -256,6 +281,8 @@ export class Preferences extends React.Component<
       selectedTimeFormat: getTimeFormatPreference(),
       selectedNumberFormat: getNumberFormatPreference(),
       preferAbsoluteDates: getPreferAbsoluteDates(),
+      codexCliCommand: this.props.codexCliCommand,
+      codexCliModel: this.props.codexCliModel,
     }
   }
 
@@ -329,7 +356,12 @@ export class Preferences extends React.Component<
       customEditor: this.props.customEditor ?? DefaultCustomIntegration,
       useCustomShell: this.props.useCustomShell,
       customShell: this.props.customShell ?? DefaultCustomIntegration,
+      useCustomExternalDiff: this.props.useCustomExternalDiff,
+      customExternalDiff:
+        this.props.customExternalDiff ?? DefaultExternalDiffIntegration,
       isLoadingGitConfig: false,
+      codexCliCommand: this.props.codexCliCommand,
+      codexCliModel: this.props.codexCliModel,
     })
   }
 
@@ -527,11 +559,24 @@ export class Preferences extends React.Component<
             customEditor={this.state.customEditor}
             useCustomShell={this.state.useCustomShell}
             customShell={this.state.customShell}
+            useCustomExternalDiff={this.state.useCustomExternalDiff}
+            customExternalDiff={this.state.customExternalDiff}
             onSelectedShellChanged={this.onSelectedShellChanged}
             onUseCustomEditorChanged={this.onUseCustomEditorChanged}
             onCustomEditorChanged={this.onCustomEditorChanged}
             onUseCustomShellChanged={this.onUseCustomShellChanged}
             onCustomShellChanged={this.onCustomShellChanged}
+            onUseCustomExternalDiffChanged={this.onUseCustomExternalDiffChanged}
+            onCustomExternalDiffChanged={this.onCustomExternalDiffChanged}
+            codexCliCommand={this.state.codexCliCommand}
+            codexCliModel={this.state.codexCliModel}
+            codexCliStatus={this.props.codexCliStatus}
+            codexCliVersion={this.props.codexCliVersion}
+            codexCliCheckedAt={this.props.codexCliCheckedAt}
+            codexCliLastError={this.props.codexCliLastError}
+            onCodexCliCommandChanged={this.onCodexCliCommandChanged}
+            onCodexCliModelChanged={this.onCodexCliModelChanged}
+            onCheckCodexCliAvailability={this.onCheckCodexCliAvailability}
           />
         )
         break
@@ -873,6 +918,28 @@ export class Preferences extends React.Component<
     this.setState({ customShell })
   }
 
+  private onUseCustomExternalDiffChanged = (useCustomExternalDiff: boolean) => {
+    this.setState({ useCustomExternalDiff })
+  }
+
+  private onCustomExternalDiffChanged = (
+    customExternalDiff: ICustomIntegration
+  ) => {
+    this.setState({ customExternalDiff })
+  }
+
+  private onCodexCliCommandChanged = (codexCliCommand: string) => {
+    this.setState({ codexCliCommand })
+  }
+
+  private onCodexCliModelChanged = (codexCliModel: string) => {
+    this.setState({ codexCliModel })
+  }
+
+  private onCheckCodexCliAvailability = async () => {
+    await this.props.dispatcher.checkCodexCliAvailability()
+  }
+
   private onSelectedThemeChanged = (theme: ApplicationTheme) => {
     this.props.dispatcher.setSelectedTheme(theme)
   }
@@ -1045,6 +1112,20 @@ export class Preferences extends React.Component<
       dispatcher.setCustomShell(customShell)
     }
 
+    const { useCustomExternalDiff, customExternalDiff } = this.state
+    const isValidCustomExternalDiff =
+      customExternalDiff &&
+      (await isValidCustomIntegrationWithPlaceholders(customExternalDiff, [
+        LeftPathArgument,
+        RightPathArgument,
+      ]))
+    dispatcher.setUseCustomExternalDiff(
+      useCustomExternalDiff && isValidCustomExternalDiff
+    )
+    if (isValidCustomExternalDiff) {
+      dispatcher.setCustomExternalDiff(customExternalDiff)
+    }
+
     if (
       this.props.useExternalCredentialHelper !==
       this.state.useExternalCredentialHelper
@@ -1082,6 +1163,15 @@ export class Preferences extends React.Component<
     if (this.state.selectedExternalEditor) {
       await dispatcher.setExternalEditor(this.state.selectedExternalEditor)
     }
+
+    if (this.state.codexCliCommand !== this.props.codexCliCommand) {
+      await dispatcher.setCodexCliCommand(this.state.codexCliCommand)
+    }
+
+    if (this.state.codexCliModel !== this.props.codexCliModel) {
+      await dispatcher.setCodexCliModel(this.state.codexCliModel)
+    }
+
     await dispatcher.setShell(this.state.selectedShell)
     await dispatcher.setConfirmDiscardChangesSetting(
       this.state.confirmDiscardChanges
