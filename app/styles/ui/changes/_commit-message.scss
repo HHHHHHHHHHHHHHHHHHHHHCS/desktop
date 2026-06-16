@@ -150,7 +150,8 @@
     }
   }
 
-  .copilot-button {
+  .copilot-button,
+  .codex-button {
     color: var(--text-secondary-color);
 
     &:not([aria-disabled='true']):hover {
@@ -164,6 +165,10 @@
     // Override default button width for as long as we have the call-to-action
     // bubble in the button. DELETE AFTER THE CALL-TO-ACTION BUBBLE IS REMOVED
     width: auto !important;
+  }
+
+  .codex-button.ready {
+    color: var(--text-color);
   }
 
   .co-authors-toggle,
@@ -283,6 +288,7 @@
 
     .co-authors-toggle,
     .copilot-button,
+    .codex-button,
     .commit-options-button {
       // button reset styles
       border: none;

@@ -24,7 +24,12 @@ import { Commit, ICommitContext } from '../../models/commit'
 import { startTimer } from '../lib/timing'
 import { CommitWarning, CommitWarningIcon } from './commit-warning'
 import { LinkButton } from '../lib/link-button'
-import { CommitOptions, Foldout, FoldoutType } from '../../lib/app-state'
+import {
+  CodexCliStatus,
+  CommitOptions,
+  Foldout,
+  FoldoutType,
+} from '../../lib/app-state'
 import { IAvatarUser, getAvatarUserFromAuthor } from '../../models/avatar'
 import { showContextualMenu } from '../../lib/menu-item'
 import { Account, isEnterpriseAccount } from '../../models/account'
@@ -175,6 +180,14 @@ interface ICommitMessageProps {
     filesSelected: ReadonlyArray<WorkingDirectoryFileChange>,
     mustOverrideExistingMessage: boolean
   ) => void
+
+  readonly onGenerateCommitMessageWithCodex?: (
+    filesSelected: ReadonlyArray<WorkingDirectoryFileChange>,
+    mustOverrideExistingMessage: boolean
+  ) => void
+
+  readonly codexCliStatus: CodexCliStatus
+  readonly codexCliLastError: string | null
 
   /**
    * Called when the component has given the commit message focus due to
@@ -970,6 +983,18 @@ export class CommitMessage extends React.Component<
     )
   }
 
+  private onCodexButtonClick = async (
+    e: React.MouseEvent<HTMLButtonElement>
+  ) => {
+    e.preventDefault()
+    const { commitMessage } = this.state
+
+    this.props.onGenerateCommitMessageWithCodex?.(
+      this.props.filesSelected,
+      !!commitMessage.summary || !!commitMessage.description
+    )
+  }
+
   private onCoAuthorToggleButtonClick = async (
     e: React.MouseEvent<HTMLButtonElement>
   ) => {
@@ -1029,14 +1054,89 @@ export class CommitMessage extends React.Component<
     )
   }
 
+  private getCodexButtonTooltip(
+    noChangesAvailable: boolean,
+    isGeneratingCommitMessage: boolean
+  ) {
+    if (isGeneratingCommitMessage) {
+      return 'Opening command window...'
+    }
+
+    if (this.props.codexCliStatus === 'missing') {
+      return 'Codex CLI is not installed. Run: npm install -g @openai/codex'
+    }
+
+    if (this.props.codexCliStatus === 'checking') {
+      return 'Checking Codex CLI availability...'
+    }
+
+    if (this.props.codexCliStatus === 'error') {
+      return (
+        this.props.codexCliLastError ??
+        'Codex CLI is unavailable. Check command configuration in settings.'
+      )
+    }
+
+    if (noChangesAvailable) {
+      return 'Files must be selected to run Codex commit command.'
+    }
+
+    return 'Open command window and run Codex CLI commit command'
+  }
+
+  private renderCodexButton() {
+    if (!this.isCodexButtonEnabled) {
+      return null
+    }
+
+    const {
+      filesSelected,
+      isCommitting,
+      isGeneratingCommitMessage,
+      commitToAmend,
+      codexCliStatus,
+    } = this.props
+
+    const noFilesSelected = filesSelected.length === 0
+    const noChangesAvailable = !commitToAmend && noFilesSelected
+    const shouldRenderSeparator =
+      this.isCoAuthorInputEnabled || this.isCopilotButtonEnabled
+
+    const tooltip = this.getCodexButtonTooltip(
+      noChangesAvailable,
+      !!isGeneratingCommitMessage
+    )
+
+    return (
+      <>
+        {shouldRenderSeparator && <div className="separator" />}
+        <Button
+          className={classNames('codex-button', {
+            ready: codexCliStatus === 'ready',
+          })}
+          onClick={this.onCodexButtonClick}
+          ariaLabel={tooltip}
+          tooltip={tooltip}
+          disabled={
+            isCommitting === true ||
+            isGeneratingCommitMessage ||
+            noChangesAvailable
+          }
+        >
+          <Octicon symbol={octicons.terminal} />
+        </Button>
+      </>
+    )
+  }
+
   private renderCommitOptionsButton() {
     const ariaLabel = 'Configure commit options'
 
     return (
       <>
-        {(this.isCoAuthorInputEnabled || this.isCopilotButtonEnabled) && (
-          <div className="separator" />
-        )}
+        {(this.isCoAuthorInputEnabled ||
+          this.isCopilotButtonEnabled ||
+          this.isCodexButtonEnabled) && <div className="separator" />}
         <Button
           className={classNames('commit-options-button', {
             'default-options':
@@ -1191,6 +1291,10 @@ export class CommitMessage extends React.Component<
     )
   }
 
+  private get isCodexButtonEnabled() {
+    return this.props.onGenerateCommitMessageWithCodex !== undefined
+  }
+
   private renderActionBar() {
     const { isCommitting, isGeneratingCommitMessage } = this.props
 
@@ -1202,6 +1306,7 @@ export class CommitMessage extends React.Component<
       <div className={className}>
         {this.renderCoAuthorToggleButton()}
         {this.renderCopilotButton()}
+        {this.renderCodexButton()}
         {this.renderCommitOptionsButton()}
       </div>
     )

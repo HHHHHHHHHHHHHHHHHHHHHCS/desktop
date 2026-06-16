@@ -200,6 +200,8 @@ export class CommitMessageDialog extends React.Component<
             isCommitting={false}
             hookProgress={null}
             onShowCommitProgress={undefined}
+            codexCliStatus="missing"
+            codexCliLastError={null}
             skipCommitHooks={this.props.skipCommitHooks}
             signOffCommits={this.props.signOffCommits}
             allowEmptyCommit={this.props.allowEmptyCommit}

@@ -33,6 +33,7 @@ import { IAheadBehind } from '../../models/branch'
 import { Emoji } from '../../lib/emoji'
 import { FilterChangesList } from './filter-changes-list'
 import { HookProgress } from '../../lib/git'
+import { CodexCliStatus } from '../../lib/app-state'
 
 /**
  * The timeout for the animation of the enter/leave animation for Undo.
@@ -45,6 +46,7 @@ const UndoCommitAnimationTimeout = 500
 interface IChangesSidebarProps {
   readonly repository: Repository
   readonly changes: IChangesState
+  readonly canDiffMultipleFiles: boolean
   readonly aheadBehind: IAheadBehind | null
   readonly dispatcher: Dispatcher
   readonly commitAuthor: CommitIdentity | null
@@ -59,6 +61,8 @@ interface IChangesSidebarProps {
   readonly hookProgress: HookProgress | null
   readonly onShowCommitProgress: (() => void) | undefined
   readonly isGeneratingCommitMessage: boolean
+  readonly codexCliStatus: CodexCliStatus
+  readonly codexCliLastError: string | null
   readonly shouldShowGenerateCommitMessageCallOut: boolean
   readonly commitToAmend: Commit | null
   readonly isPushPullFetchInProgress: boolean
@@ -425,6 +429,7 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
           dispatcher={this.props.dispatcher}
           repository={this.props.repository}
           repositoryAccount={repositoryAccount}
+          canDiffMultipleFiles={this.props.canDiffMultipleFiles}
           workingDirectory={workingDirectory}
           conflictState={conflictState}
           mostRecentLocalCommit={this.props.mostRecentLocalCommit}
@@ -457,6 +462,8 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
           hookProgress={this.props.hookProgress}
           onShowCommitProgress={this.props.onShowCommitProgress}
           isGeneratingCommitMessage={this.props.isGeneratingCommitMessage}
+          codexCliStatus={this.props.codexCliStatus}
+          codexCliLastError={this.props.codexCliLastError}
           shouldShowGenerateCommitMessageCallOut={
             this.props.shouldShowGenerateCommitMessageCallOut
           }

@@ -12,12 +12,14 @@ import {
 } from '../../../src/models/status'
 import { CopilotDisclaimer } from '../../../src/ui/copilot/copilot-disclaimer'
 import { GenerateCommitMessageOverrideWarning } from '../../../src/ui/generate-commit-message/generate-commit-message-override-warning'
+import type { CommitMessageGenerator } from '../../../src/models/popup'
 import type { Dispatcher } from '../../../src/ui/dispatcher'
 import { fireEvent, render, screen, waitFor } from '../../helpers/ui/render'
 
 const originalEvent = globalThis.Event
 let restoreIpcSend: (() => void) | null = null
 const fixtureRepositoryPath = '/tmp/desktop-fixture'
+const generator: CommitMessageGenerator = 'copilot'
 
 class TestDispatcher {
   public disclaimerSeenCount = 0
@@ -162,6 +164,7 @@ describe('commit message warning dialogs', () => {
         dispatcher={toDispatcher(dispatcher)}
         repository={repository}
         filesSelected={filesSelected}
+        generator={generator}
         showCopilotInstructionsTip={true}
         onDismissed={onDismissed}
       />
@@ -224,6 +227,7 @@ describe('commit message warning dialogs', () => {
         dispatcher={toDispatcher(dispatcher)}
         repository={repository}
         filesSelected={filesSelected}
+        generator={generator}
         showCopilotInstructionsTip={false}
         onDismissed={() => {}}
       />

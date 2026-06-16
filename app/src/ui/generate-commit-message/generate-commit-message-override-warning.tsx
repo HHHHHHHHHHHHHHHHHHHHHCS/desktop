@@ -11,11 +11,13 @@ import { Dispatcher } from '../dispatcher'
 import { Checkbox, CheckboxValue } from '../lib/checkbox'
 import { LinkButton } from '../lib/link-button'
 import { Row } from '../lib/row'
+import { CommitMessageGenerator } from '../../models/popup'
 
 interface IGenerateCommitMessageOverrideWarningProps {
   readonly dispatcher: Dispatcher
   readonly repository: Repository
   readonly filesSelected: ReadonlyArray<WorkingDirectoryFileChange>
+  readonly generator: CommitMessageGenerator
   readonly showCopilotInstructionsTip: boolean
 
   /**
@@ -104,7 +106,8 @@ export class GenerateCommitMessageOverrideWarning extends React.Component<
 
     this.props.dispatcher.generateCommitMessage(
       this.props.repository,
-      this.props.filesSelected
+      this.props.filesSelected,
+      this.props.generator
     )
     this.props.onDismissed()
   }

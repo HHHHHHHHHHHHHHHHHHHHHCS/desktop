@@ -75,6 +75,8 @@ import {
 import { ChangesListFilterOptions } from './changes-list-filter-options'
 import { HookProgress } from '../../lib/git'
 import { formatNumber } from '../../lib/format-number'
+import { CodexCliStatus } from '../../lib/app-state'
+import { CommitMessageGenerator } from '../../models/popup'
 
 export interface IChangesListItem extends IFilterListItem {
   readonly id: string
@@ -103,6 +105,7 @@ const GitIgnoreFileName = '.gitignore'
 interface IFilterChangesListProps {
   readonly repository: Repository
   readonly repositoryAccount: Account | null
+  readonly canDiffMultipleFiles: boolean
   readonly workingDirectory: WorkingDirectoryStatus
   readonly mostRecentLocalCommit: Commit | null
   /**
@@ -162,6 +165,8 @@ interface IFilterChangesListProps {
   readonly hookProgress: HookProgress | null
   readonly onShowCommitProgress?: (() => void) | undefined
   readonly isGeneratingCommitMessage: boolean
+  readonly codexCliStatus: CodexCliStatus
+  readonly codexCliLastError: string | null
   readonly shouldShowGenerateCommitMessageCallOut: boolean
   readonly commitToAmend: Commit | null
   readonly currentBranchProtected: boolean
@@ -654,6 +659,45 @@ export class FilterChangesList extends React.Component<
     }
   }
 
+  private getDiffFileMenuItem = (file: WorkingDirectoryFileChange): IMenuItem => {
+    const label = __DARWIN__ ? 'Diff file (Cmd+D)' : 'Diff file (Ctrl+D)'
+
+    return {
+      label,
+      action: () => this.onDiffFile(file),
+    }
+  }
+
+  private getDiffCurrentFileMenuItem = (
+    file: WorkingDirectoryFileChange
+  ): IMenuItem => {
+    const fileName = basename(file.path)
+    const label = __DARWIN__
+      ? `Diff Current File (${fileName})`
+      : `Diff current file (${fileName})`
+
+    return {
+      label,
+      action: () => this.onDiffFile(file),
+    }
+  }
+
+  private getDiffSelectedFilesMenuItem = (
+    files: ReadonlyArray<WorkingDirectoryFileChange>
+  ): IMenuItem => {
+    const countLabel = `${formatNumber(files.length)} file${plural(
+      files.length
+    )}`
+    const label = __DARWIN__
+      ? `Diff Selected Files (${countLabel})`
+      : `Diff selected files (${countLabel})`
+
+    return {
+      label,
+      action: () => this.onDiffFiles(files),
+    }
+  }
+
   private getDefaultContextMenu(
     file: WorkingDirectoryFileChange
   ): ReadonlyArray<IMenuItem> {
@@ -691,10 +735,21 @@ export class FilterChangesList extends React.Component<
       addItemToArray(id)
     }
 
-    const items: IMenuItem[] = [
-      this.getDiscardChangesMenuItem(paths),
-      { type: 'separator' },
-    ]
+    const items: IMenuItem[] =
+      paths.length > 1 && this.props.canDiffMultipleFiles
+        ? [
+            this.getDiffSelectedFilesMenuItem(selectedFiles),
+            this.getDiffCurrentFileMenuItem(file),
+            { type: 'separator' },
+            this.getDiscardChangesMenuItem(paths),
+            { type: 'separator' },
+          ]
+        : [
+            this.getDiffFileMenuItem(file),
+            { type: 'separator' },
+            this.getDiscardChangesMenuItem(paths),
+            { type: 'separator' },
+          ]
     if (paths.length === 1) {
       const enabled = Path.basename(path) !== GitIgnoreFileName
       items.push({
@@ -811,6 +866,8 @@ export class FilterChangesList extends React.Component<
     const isSafeExtension = isSafeFileExtension(extension)
 
     const items = new Array<IMenuItem>()
+
+    items.push(this.getDiffFileMenuItem(file), { type: 'separator' })
 
     if (file.status.kind === AppFileStatusKind.Untracked) {
       items.push(this.getDiscardChangesMenuItem([file.path]), {
@@ -1000,6 +1057,9 @@ export class FilterChangesList extends React.Component<
         }
         onPersistCommitMessage={this.onPersistCommitMessage}
         onGenerateCommitMessage={this.onGenerateCommitMessage}
+        onGenerateCommitMessageWithCodex={this.onGenerateCommitMessageWithCodex}
+        codexCliStatus={this.props.codexCliStatus}
+        codexCliLastError={this.props.codexCliLastError}
         onCommitMessageFocusSet={this.onCommitMessageFocusSet}
         onRefreshAuthor={this.onRefreshAuthor}
         onShowPopup={this.onShowPopup}
@@ -1057,14 +1117,39 @@ export class FilterChangesList extends React.Component<
       'generateCommitMessageButtonClickCount'
     )
 
+    return this.generateCommitMessageWithProvider(
+      filesSelected,
+      mustOverrideExistingMessage,
+      'copilot'
+    )
+  }
+
+  private onGenerateCommitMessageWithCodex = (
+    filesSelected: ReadonlyArray<WorkingDirectoryFileChange>,
+    _mustOverrideExistingMessage: boolean
+  ) => {
+    return this.props.dispatcher.generateCommitMessage(
+      this.props.repository,
+      filesSelected,
+      'codex'
+    )
+  }
+
+  private generateCommitMessageWithProvider = (
+    filesSelected: ReadonlyArray<WorkingDirectoryFileChange>,
+    mustOverrideExistingMessage: boolean,
+    generator: CommitMessageGenerator
+  ) => {
     return mustOverrideExistingMessage
       ? this.props.dispatcher.promptOverrideWithGeneratedCommitMessage(
           this.props.repository,
-          filesSelected
+          filesSelected,
+          generator
         )
       : this.props.dispatcher.generateCommitMessage(
           this.props.repository,
-          filesSelected
+          filesSelected,
+          generator
         )
   }
 
@@ -1128,10 +1213,29 @@ export class FilterChangesList extends React.Component<
     this.props.onOpenItemInExternalEditor(item.change.path)
   }
 
+  private onDiffFile = (file: WorkingDirectoryFileChange) => {
+    void this.props.dispatcher.diffFileInChanges(this.props.repository, file)
+  }
+
+  private onDiffFiles = (files: ReadonlyArray<WorkingDirectoryFileChange>) => {
+    void this.props.dispatcher.diffFilesInChanges(this.props.repository, files)
+  }
+
   private onItemKeyDown = (
-    _item: IChangesListItem,
+    item: IChangesListItem,
     event: React.KeyboardEvent<HTMLDivElement>
   ) => {
+    const isDiffShortcut =
+      event.key.toLowerCase() === 'd' &&
+      (event.ctrlKey || event.metaKey) &&
+      !event.altKey
+
+    if (isDiffShortcut) {
+      event.preventDefault()
+      this.onDiffFile(item.change)
+      return
+    }
+
     // The commit is already in-flight but this check prevents the
     // user from changing selection.
     if (

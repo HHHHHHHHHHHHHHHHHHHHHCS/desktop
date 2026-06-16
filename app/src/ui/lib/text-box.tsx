@@ -202,8 +202,22 @@ export class TextBox extends React.Component<ITextBoxProps, ITextBoxState> {
   }
 
   private onSearchTextCleared = () => {
-    this.setState({ valueCleared: true })
-    this.props.onSearchCleared?.()
+    if (this.inputElement === null) {
+      return
+    }
+
+    const value = this.inputElement.value
+
+    // `search` events can be emitted when pressing Enter as well as when
+    // clearing the input. Only treat this as a clear operation when empty.
+    if (value !== '') {
+      return
+    }
+
+    this.setState({ value, valueCleared: true }, () => {
+      this.props.onValueChanged?.(value)
+      this.props.onSearchCleared?.()
+    })
   }
 
   private clearSearchText = (e: React.MouseEvent) => {
@@ -337,6 +351,7 @@ export class TextBox extends React.Component<ITextBoxProps, ITextBoxState> {
             <button
               className="clear-button"
               aria-label="Clear"
+              type="button"
               onClick={this.clearSearchText}
             >
               <Octicon symbol={octicons.x} />
