@@ -31,7 +31,7 @@
       background-color: var(--box-background-color);
     }
 
-    &:hover {
+    &:not([aria-disabled='true']):hover {
       background-color: var(--box-hover-background-color) !important;
       color: var(--toolbar-dropdown-text-hover-color) !important;
     }

@@ -65,6 +65,7 @@ export class Repository {
       this.missing,
       this.alias,
       this.workflowPreferences.forkContributionTarget,
+      this.workflowPreferences.autoUpdateEnabled,
       this.isTutorialRepository
     )
   }
@@ -219,4 +220,13 @@ export function isForkedRepositoryContributingToParent(
     isRepositoryWithForkedGitHubRepository(repository) &&
     getForkContributionTarget(repository) === ForkContributionTarget.Parent
   )
+}
+
+/**
+ * Returns whether automatic background updates are enabled for the repository.
+ *
+ * Defaults to true when no explicit preference has been stored.
+ */
+export function isRepositoryAutoUpdateEnabled(repository: Repository): boolean {
+  return repository.workflowPreferences.autoUpdateEnabled ?? true
 }

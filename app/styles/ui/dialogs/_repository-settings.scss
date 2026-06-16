@@ -45,4 +45,17 @@
   textarea.gitignore {
     height: 130px;
   }
+
+  .repository-workflow-settings {
+    h2 {
+      margin-bottom: var(--spacing-half);
+    }
+
+    .workflow-settings-description {
+      margin-top: var(--spacing);
+      color: var(--text-secondary-color);
+      font-size: var(--font-size-sm);
+      line-height: 1.4;
+    }
+  }
 }

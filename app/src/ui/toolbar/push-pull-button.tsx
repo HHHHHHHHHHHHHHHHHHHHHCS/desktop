@@ -47,6 +47,21 @@ interface IPushPullButtonProps {
   /** Is a push/pull/fetch in progress? */
   readonly networkActionInProgress: boolean
 
+  /** Whether the current repository is a fork and should show sync fork entry. */
+  readonly showSyncFork: boolean
+
+  /** Whether the sync fork action is currently available. */
+  readonly canSyncFork: boolean
+
+  /** Whether sync fork is actively running. */
+  readonly syncForkInProgress: boolean
+
+  /** Reason shown when sync fork is disabled. */
+  readonly syncForkDisabledReason: string | null
+
+  /** The target branch name for sync fork, if known. */
+  readonly syncForkTargetBranchName: string | null
+
   /** The date of the last fetch. */
   readonly lastFetched: Date | null
 
@@ -89,6 +104,9 @@ interface IPushPullButtonProps {
   /** Will the app prompt the user to confirm a force push? */
   readonly askForConfirmationOnForcePush: boolean
 
+  /** Sync fork with contribution target branch. */
+  readonly syncFork: () => void
+
   /** Whether the dropdown will trap focus or not. Defaults to true.
    *
    * Example of usage: If a dropdown is open and then a dialog subsequently, the
@@ -110,7 +128,7 @@ interface IPushPullButtonProps {
   readonly onDropdownStateChanged: (state: DropdownState) => void
 }
 
-type ActionInProgress = 'push' | 'pull' | 'fetch' | 'force push'
+type ActionInProgress = 'push' | 'pull' | 'fetch' | 'force push' | 'sync fork'
 
 interface IPushPullButtonState {
   readonly screenReaderStateMessage: string | null
@@ -119,6 +137,7 @@ interface IPushPullButtonState {
 
 export enum DropdownItemType {
   Fetch = 'fetch',
+  SyncFork = 'sync-fork',
   ForcePush = 'force-push',
 }
 
@@ -127,6 +146,8 @@ export type DropdownItem = {
   readonly description: string | JSX.Element
   readonly action: () => void
   readonly icon: OcticonSymbol
+  readonly disabled?: boolean
+  readonly tooltip?: string
 }
 
 function renderAheadBehind(aheadBehind: IAheadBehind, numTagsToPush: number) {
@@ -217,6 +238,16 @@ export class PushPullButton extends React.Component<
         screenReaderStateMessage: `${
           this.state.actionInProgress ?? 'Pull, push, or fetch'
         } complete`,
+        actionInProgress: null,
+      })
+    }
+
+    const syncForkCompleted =
+      prevProps.syncForkInProgress && !this.props.syncForkInProgress
+
+    if (syncForkCompleted) {
+      this.setState({
+        screenReaderStateMessage: 'Sync fork complete',
         actionInProgress: null,
       })
     }
@@ -365,6 +396,20 @@ export class PushPullButton extends React.Component<
     )
   }
 
+  private syncFork = () => {
+    if (!this.props.canSyncFork) {
+      return
+    }
+
+    this.closeDropdown()
+    this.props.syncFork()
+
+    this.setState({
+      actionInProgress: 'sync fork',
+      screenReaderStateMessage: 'Syncing fork...',
+    })
+  }
+
   /**
    * Handler called when the width of the push/pull button has changed
    * through an explicit resize event to the given width.
@@ -392,13 +437,28 @@ export class PushPullButton extends React.Component<
           itemTypes={itemTypes}
           remoteName={this.props.remoteName}
           fetch={this.fetch}
+          syncFork={this.syncFork}
           forcePushWithLease={this.forcePushWithLease}
+          canSyncFork={this.props.canSyncFork}
+          syncForkInProgress={this.props.syncForkInProgress}
+          syncForkDisabledReason={this.props.syncForkDisabledReason}
+          syncForkTargetBranchName={this.props.syncForkTargetBranchName}
           askForConfirmationOnForcePush={
             this.props.askForConfirmationOnForcePush
           }
         />
       )
     }
+  }
+
+  private getBaseDropdownItemTypes(): Array<DropdownItemType> {
+    const dropdownItemTypes = [DropdownItemType.Fetch]
+
+    if (this.props.showSyncFork) {
+      dropdownItemTypes.push(DropdownItemType.SyncFork)
+    }
+
+    return dropdownItemTypes
   }
 
   public render() {
@@ -449,6 +509,10 @@ export class PushPullButton extends React.Component<
 
     if (progress !== null) {
       return this.progressButton(progress, networkActionInProgress)
+    }
+
+    if (this.props.syncForkInProgress) {
+      return this.syncForkProgressButton()
     }
 
     if (remoteName === null) {
@@ -579,9 +643,22 @@ export class PushPullButton extends React.Component<
         icon={octicons.upload}
         onClick={onClick}
         className={className}
-        dropdownContentRenderer={this.getDropdownContentRenderer([
-          DropdownItemType.Fetch,
-        ])}
+        dropdownContentRenderer={this.getDropdownContentRenderer(
+          this.getBaseDropdownItemTypes()
+        )}
+      />
+    )
+  }
+
+  private syncForkProgressButton() {
+    return (
+      <ToolbarButton
+        {...this.defaultButtonProps()}
+        title="Sync fork"
+        description="Syncing fork..."
+        icon={syncClockwise}
+        iconClassName="spin"
+        disabled={true}
       />
     )
   }
@@ -592,6 +669,22 @@ export class PushPullButton extends React.Component<
     onClick: () => void
   ) {
     const title = `Fetch ${remoteName}`
+
+    if (this.props.showSyncFork) {
+      return (
+        <ToolbarDropdown
+          {...this.defaultDropdownProps()}
+          title={title}
+          description={renderLastFetched(lastFetched)}
+          icon={syncClockwise}
+          onClick={onClick}
+          dropdownContentRenderer={this.getDropdownContentRenderer(
+            this.getBaseDropdownItemTypes()
+          )}
+        />
+      )
+    }
+
     return (
       <ToolbarButton
         {...this.defaultButtonProps()}
@@ -616,7 +709,7 @@ export class PushPullButton extends React.Component<
       ? `Pull ${remoteName} with rebase`
       : `Pull ${remoteName}`
 
-    const dropdownItemTypes = [DropdownItemType.Fetch]
+    const dropdownItemTypes = this.getBaseDropdownItemTypes()
 
     if (forcePushBranchState !== ForcePushBranchState.NotAvailable) {
       dropdownItemTypes.push(DropdownItemType.ForcePush)
@@ -655,7 +748,7 @@ export class PushPullButton extends React.Component<
         icon={octicons.arrowUp}
         onClick={onClick}
         dropdownContentRenderer={this.getDropdownContentRenderer([
-          DropdownItemType.Fetch,
+          ...this.getBaseDropdownItemTypes(),
         ])}
       >
         {renderAheadBehind(aheadBehind, numTagsToPush)}
@@ -678,7 +771,7 @@ export class PushPullButton extends React.Component<
         icon={forcePushIcon}
         onClick={onClick}
         dropdownContentRenderer={this.getDropdownContentRenderer([
-          DropdownItemType.Fetch,
+          ...this.getBaseDropdownItemTypes(),
         ])}
       >
         {renderAheadBehind(aheadBehind, numTagsToPush)}

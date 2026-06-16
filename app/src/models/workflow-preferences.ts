@@ -11,4 +11,11 @@ export type WorkflowPreferences = {
    * What repo does the user want to contribute to with this fork?
    */
   readonly forkContributionTarget?: ForkContributionTarget
+
+  /**
+   * Whether automatic background updates are enabled for this repository.
+   *
+   * When undefined we treat it as enabled to preserve current behavior.
+   */
+  readonly autoUpdateEnabled?: boolean
 }

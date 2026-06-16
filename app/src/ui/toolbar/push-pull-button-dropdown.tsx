@@ -17,7 +17,12 @@ interface IPushPullButtonDropDownProps {
   readonly askForConfirmationOnForcePush: boolean
 
   readonly fetch: () => void
+  readonly syncFork: () => void
   readonly forcePushWithLease: () => void
+  readonly canSyncFork: boolean
+  readonly syncForkInProgress: boolean
+  readonly syncForkDisabledReason: string | null
+  readonly syncForkTargetBranchName: string | null
 }
 
 export class PushPullButtonDropDown extends React.Component<IPushPullButtonDropDownProps> {
@@ -76,6 +81,36 @@ export class PushPullButtonDropDown extends React.Component<IPushPullButtonDropD
           action: this.props.fetch,
           icon: syncClockwise,
         }
+      case DropdownItemType.SyncFork: {
+        if (this.props.syncForkInProgress) {
+          return {
+            title: 'Sync fork',
+            description: 'Syncing fork...',
+            action: this.props.syncFork,
+            icon: syncClockwise,
+            disabled: true,
+            tooltip: 'Sync fork is already in progress.',
+          }
+        }
+
+        const targetDescription =
+          this.props.syncForkTargetBranchName === null
+            ? 'Rebase onto the latest changes from the contribution target branch.'
+            : `Rebase onto the latest changes from ${this.props.syncForkTargetBranchName}.`
+
+        return {
+          title: 'Sync fork',
+          description: targetDescription,
+          action: this.props.syncFork,
+          icon: syncClockwise,
+          disabled: !this.props.canSyncFork,
+          tooltip:
+            !this.props.canSyncFork &&
+            this.props.syncForkDisabledReason !== null
+              ? this.props.syncForkDisabledReason
+              : undefined,
+        }
+      }
       case DropdownItemType.ForcePush: {
         const forcePushWarning = this.props
           .askForConfirmationOnForcePush ? null : (
@@ -108,6 +143,8 @@ export class PushPullButtonDropDown extends React.Component<IPushPullButtonDropD
         className={DropdownItemClassName}
         key={type}
         onClick={item.action}
+        disabled={item.disabled}
+        tooltip={item.tooltip}
       >
         <Octicon symbol={item.icon} />
         <div className="text-container">

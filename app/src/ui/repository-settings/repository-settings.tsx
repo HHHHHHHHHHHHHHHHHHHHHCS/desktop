@@ -9,15 +9,17 @@ import { PopupType } from '../../models/popup'
 import {
   Repository,
   getForkContributionTarget,
+  isRepositoryAutoUpdateEnabled,
   isRepositoryWithForkedGitHubRepository,
 } from '../../models/repository'
-import { Dialog, DialogError, DialogFooter } from '../dialog'
+import { Dialog, DialogContent, DialogError, DialogFooter } from '../dialog'
 import { NoRemote } from './no-remote'
 import { readGitIgnoreAtRoot } from '../../lib/git'
 import { OkCancelButtonGroup } from '../dialog/ok-cancel-button-group'
 import { ForkSettings } from './fork-settings'
 import { ForkContributionTarget } from '../../models/workflow-preferences'
 import { GitConfigLocation, GitConfig } from './git-config'
+import { Checkbox, CheckboxValue } from '../lib/checkbox'
 import {
   getConfigValue,
   getGlobalConfigValue,
@@ -45,6 +47,7 @@ export enum RepositorySettingsTab {
   Remote = 0,
   IgnoredFiles,
   GitConfig,
+  Workflow,
   ForkSettings,
 }
 
@@ -65,6 +68,7 @@ interface IRepositorySettingsState {
   readonly initialCommitterEmail: string | null
   readonly errors?: ReadonlyArray<JSX.Element | string>
   readonly forkContributionTarget: ForkContributionTarget
+  readonly autoUpdateEnabled: boolean
   readonly isLoadingGitConfig: boolean
 }
 
@@ -83,6 +87,7 @@ export class RepositorySettings extends React.Component<
       ignoreTextHasChanged: false,
       disabled: false,
       forkContributionTarget: getForkContributionTarget(props.repository),
+      autoUpdateEnabled: isRepositoryAutoUpdateEnabled(props.repository),
       saveDisabled: false,
       gitConfigLocation: GitConfigLocation.Global,
       committerName: '',
@@ -195,6 +200,10 @@ export class RepositorySettings extends React.Component<
               <Octicon className="icon" symbol={octicons.gitCommit} />
               {__DARWIN__ ? 'Git Config' : 'Git config'}
             </span>
+            <span>
+              <Octicon className="icon" symbol={octicons.workflow} />
+              {__DARWIN__ ? 'Background Updates' : 'Background updates'}
+            </span>
             {showForkSettings && (
               <span>
                 <Octicon className="icon" symbol={octicons.repoForked} />
@@ -254,6 +263,10 @@ export class RepositorySettings extends React.Component<
             }
           />
         )
+      }
+
+      case RepositorySettingsTab.Workflow: {
+        return this.renderWorkflowSettings()
       }
 
       case RepositorySettingsTab.GitConfig: {
@@ -328,16 +341,24 @@ export class RepositorySettings extends React.Component<
       }
     }
 
-    // only update this if it will be different from what we have stored
-    if (
+    const forkContributionTargetChanged =
+      isRepositoryWithForkedGitHubRepository(this.props.repository) &&
       this.state.forkContributionTarget !==
-      this.props.repository.workflowPreferences.forkContributionTarget
-    ) {
+        getForkContributionTarget(this.props.repository)
+
+    const autoUpdateEnabledChanged =
+      this.state.autoUpdateEnabled !==
+      isRepositoryAutoUpdateEnabled(this.props.repository)
+
+    if (forkContributionTargetChanged || autoUpdateEnabledChanged) {
       await this.props.dispatcher.updateRepositoryWorkflowPreferences(
         this.props.repository,
         {
           ...this.props.repository.workflowPreferences,
-          forkContributionTarget: this.state.forkContributionTarget,
+          ...(isRepositoryWithForkedGitHubRepository(this.props.repository)
+            ? { forkContributionTarget: this.state.forkContributionTarget }
+            : {}),
+          autoUpdateEnabled: this.state.autoUpdateEnabled,
         }
       )
     }
@@ -415,6 +436,12 @@ export class RepositorySettings extends React.Component<
     })
   }
 
+  private onAutoUpdateEnabledChanged = (
+    event: React.FormEvent<HTMLInputElement>
+  ) => {
+    this.setState({ autoUpdateEnabled: event.currentTarget.checked })
+  }
+
   private onGitConfigLocationChanged = (value: GitConfigLocation) => {
     this.setState({ gitConfigLocation: value })
   }
@@ -430,6 +457,34 @@ export class RepositorySettings extends React.Component<
     }
 
     this.setState({ committerName, errors })
+  }
+
+  private renderWorkflowSettings() {
+    return (
+      <DialogContent>
+        <div className="repository-workflow-settings">
+          <h2>Background updates</h2>
+          <Checkbox
+            label="Automatically fetch and refresh this repository"
+            value={
+              this.state.autoUpdateEnabled
+                ? CheckboxValue.On
+                : CheckboxValue.Off
+            }
+            onChange={this.onAutoUpdateEnabledChanged}
+            ariaDescribedBy="repository-auto-update-description"
+          />
+          <p
+            id="repository-auto-update-description"
+            className="workflow-settings-description"
+          >
+            Turning this off pauses automatic background fetch and indicator
+            refreshes for this repository. Manual fetch and pull operations are
+            still available.
+          </p>
+        </div>
+      </DialogContent>
+    )
   }
 
   private onCommitterEmailChanged = (committerEmail: string) => {
