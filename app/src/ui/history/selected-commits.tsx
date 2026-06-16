@@ -267,6 +267,7 @@ export class SelectedCommits extends React.Component<
           onSelectedFileChanged={this.onFileSelected}
           selectedFile={this.props.selectedFile}
           availableWidth={availableWidth}
+          onDiffFile={this.onDiffFile}
           onContextMenu={this.onContextMenu}
           onRowDoubleClick={this.onRowDoubleClick}
         />
@@ -292,6 +293,10 @@ export class SelectedCommits extends React.Component<
   private onOpenItem = (path: string) => {
     const fullPath = Path.join(this.props.repository.path, path)
     openFile(fullPath, this.props.dispatcher)
+  }
+
+  private onDiffFile = (file: CommittedFileChange) => {
+    void this.props.dispatcher.diffFileInHistory(this.props.repository, file)
   }
 
   public render() {
@@ -383,19 +388,11 @@ export class SelectedCommits extends React.Component<
 
     const fullPath = Path.join(repository.path, file.path)
     const fileExistsOnDisk = await pathExists(fullPath)
-    if (!fileExistsOnDisk) {
-      showContextualMenu([
-        {
-          label: __DARWIN__
-            ? 'File Does Not Exist on Disk'
-            : 'File does not exist on disk',
-          enabled: false,
-        },
-      ])
-      return
-    }
 
     const extension = Path.extname(file.path)
+    const diffFileLabel = __DARWIN__
+      ? 'Diff file (Cmd+D)'
+      : 'Diff file (Ctrl+D)'
 
     const isSafeExtension = isSafeFileExtension(extension)
     const openInExternalEditor = externalEditorLabel
@@ -403,6 +400,11 @@ export class SelectedCommits extends React.Component<
       : DefaultEditorLabel
 
     const items: IMenuItem[] = [
+      {
+        label: diffFileLabel,
+        action: () => this.onDiffFile(file),
+      },
+      { type: 'separator' },
       {
         label: RevealInFileManagerLabel,
         action: () => revealInFileManager(repository, file.path),

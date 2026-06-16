@@ -10,6 +10,7 @@ interface IFileListProps {
   readonly selectedFile: CommittedFileChange | null
   readonly onSelectedFileChanged: (file: CommittedFileChange) => void
   readonly onRowDoubleClick: (row: number, source: ClickSource) => void
+  readonly onDiffFile?: (file: CommittedFileChange) => void
   readonly availableWidth: number
   readonly onContextMenu?: (
     file: CommittedFileChange,
@@ -79,6 +80,7 @@ export class FileList extends React.Component<IFileListProps, IFileListState> {
           onSelectedRowChanged={this.onSelectedRowChanged}
           onRowDoubleClick={this.props.onRowDoubleClick}
           onRowContextMenu={this.onRowContextMenu}
+          onRowKeyDown={this.onRowKeyDown}
           onRowKeyboardFocus={this.onRowFocus}
           onRowBlur={this.onRowBlur}
           getRowAriaLabel={this.getFileAriaLabel}
@@ -95,6 +97,18 @@ export class FileList extends React.Component<IFileListProps, IFileListState> {
   private onRowBlur = (row: number) => {
     if (this.state.focusedRow === row) {
       this.setState({ focusedRow: null })
+    }
+  }
+
+  private onRowKeyDown = (row: number, event: React.KeyboardEvent<any>) => {
+    const isDiffShortcut =
+      event.key.toLowerCase() === 'd' &&
+      (event.ctrlKey || event.metaKey) &&
+      !event.altKey
+
+    if (isDiffShortcut) {
+      event.preventDefault()
+      this.props.onDiffFile?.(this.props.files[row])
     }
   }
 }

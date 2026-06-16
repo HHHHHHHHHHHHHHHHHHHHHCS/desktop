@@ -33,6 +33,43 @@
     border-bottom: var(--base-border);
   }
 
+  .compare-commit-search {
+    margin-top: var(--spacing-half);
+  }
+
+  .compare-commit-search-title {
+    color: var(--text-secondary-color);
+    font-size: var(--font-size-sm);
+    margin-bottom: var(--spacing-half);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .compare-commit-search-controls {
+    display: flex;
+    gap: var(--spacing-half);
+    align-items: stretch;
+  }
+
+  .compare-commit-search-type {
+    width: 128px;
+    flex: 0 0 auto;
+  }
+
+  .compare-commit-search-input {
+    flex: 1;
+  }
+
+  .compare-commit-search-status {
+    color: var(--text-secondary-color);
+    font-size: var(--font-size-sm);
+    margin-top: var(--spacing-half);
+
+    button {
+      margin-left: var(--spacing-half);
+    }
+  }
+
   .compare-commit-list {
     flex: 1;
     display: flex;
