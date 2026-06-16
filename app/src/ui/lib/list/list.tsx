@@ -537,16 +537,19 @@ export class List extends React.Component<IListProps, IListState> {
   }
 
   private onKeyDown = (event: React.KeyboardEvent<any>) => {
+    // A row-level key handler may already have consumed the bubbling event.
+    if (event.defaultPrevented) {
+      return
+    }
+
     if (this.props.onRowKeyDown) {
       for (const row of this.props.selectedRows) {
         this.props.onRowKeyDown(row, event)
-      }
-    }
 
-    // The consumer is given a change to prevent the default behavior for
-    // keyboard navigation so that they can customize its behavior as needed.
-    if (event.defaultPrevented) {
-      return
+        if (event.defaultPrevented) {
+          return
+        }
+      }
     }
 
     const source: SelectionSource = { kind: 'keyboard', event }
